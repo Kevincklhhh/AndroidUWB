@@ -10,11 +10,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -23,6 +25,7 @@ import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.method.ScrollingMovementMethod;
 import android.text.style.ForegroundColorSpan;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -36,6 +39,7 @@ import android.widget.ToggleButton;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
 
@@ -45,11 +49,25 @@ import com.hoho.android.usbserial.driver.UsbSerialPort;
 import com.hoho.android.usbserial.driver.UsbSerialProber;
 import com.hoho.android.usbserial.util.XonXoffFilter;
 
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import android.net.Uri;
+import androidx.core.content.FileProvider;
+import android.widget.Button;
+
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 
 public class TerminalFragment extends Fragment implements ServiceConnection, SerialListener {
 
@@ -76,6 +94,12 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     private boolean pendingNewline = false;
     private String newline = TextUtil.newline_crlf;
+
+    private SensorManager sensorManager;
+    private Sensor accelerometer;
+    private Sensor gyroscope;
+    private SensorEventListener sensorEventListener;
+
 
     public TerminalFragment() {
         mainLooper = new Handler(Looper.getMainLooper());
@@ -149,12 +173,24 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             initialStart = false;
             getActivity().runOnUiThread(this::connect);
         }
+        if (sensorManager != null && sensorEventListener != null) {
+            int sensorDelay = SensorManager.SENSOR_DELAY_NORMAL; // Adjust the delay as needed
+            if (accelerometer != null) {
+                sensorManager.registerListener(sensorEventListener, accelerometer, sensorDelay);
+            }
+            if (gyroscope != null) {
+                sensorManager.registerListener(sensorEventListener, gyroscope, sensorDelay);
+            }
+        }
         if(connected == Connected.True)
             controlLines.start();
     }
 
     @Override
     public void onPause() {
+        if (sensorManager != null && sensorEventListener != null) {
+            sensorManager.unregisterListener(sensorEventListener);
+        }
         controlLines.stop();
         super.onPause();
     }
@@ -190,11 +226,58 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         hexWatcher.enable(hexEnabled);
         sendText.addTextChangedListener(hexWatcher);
         sendText.setHint(hexEnabled ? "HEX mode" : "");
-
+        // Clear the log file when the view is created
+        clearLogFile();
         View sendBtn = view.findViewById(R.id.send_btn);
         sendBtn.setOnClickListener(v -> send(sendText.getText().toString()));
         controlLines.onCreateView(view);
+        Button shareLogButton = view.findViewById(R.id.share_log_button);
+        shareLogButton.setOnClickListener(v -> shareLogFile());
+
+        sensorManager = (SensorManager) getActivity().getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) {
+            accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        } else {
+            Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
+        }
+
+        // Initialize and register the sensor event listener
+        initSensorEventListener();
+
+        // Clear the IMU log file when the view is created
+        clearIMULogFile();
         return view;
+    }
+    private void initSensorEventListener() {
+        sensorEventListener = new SensorEventListener() {
+            @Override
+            public void onSensorChanged(SensorEvent event) {
+                long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
+                if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+                    float x = event.values[0];
+                    float y = event.values[1];
+                    float z = event.values[2];
+
+                    String logEntry = "ACCELEROMETER TIMESTAMP: " + timestamp +
+                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+                    logIMUData(logEntry);
+                } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+                    float x = event.values[0];
+                    float y = event.values[1];
+                    float z = event.values[2];
+
+                    String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
+                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+                    logIMUData(logEntry);
+                }
+            }
+
+            @Override
+            public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                // Handle changes in sensor accuracy if needed
+            }
+        };
     }
 
     @Override
@@ -265,6 +348,17 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+    private static final int REQUEST_WRITE_STORAGE = 112;
+
+    private void checkStoragePermission() {
+        boolean hasPermission = ContextCompat.checkSelfPermission(getActivity(),
+                Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        if (!hasPermission) {
+            ActivityCompat.requestPermissions(getActivity(),
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    REQUEST_WRITE_STORAGE);
+        }
     }
 
     /*
@@ -358,6 +452,12 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             data = (str + newline).getBytes();
         }
         try {
+            // Record the timestamp when the command is sent
+            long sendTimestamp = System.currentTimeMillis(); // You can use System.nanoTime() for higher resolution if needed
+
+            // Log the timestamp and the sent command to the log file
+            String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
+            //logReceivedData(logEntry);
             SpannableStringBuilder spn = new SpannableStringBuilder(msg + '\n');
             spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             receiveText.append(spn);
@@ -391,14 +491,40 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
         updateSendBtn(controlLines.sendAllowed ? SendButtonState.Idle : SendButtonState.Disabled);
     }
+    private void logCIRData(List<Double> cirData) {
+        String fileName = "CIR_Log.txt";
+        String filePath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + fileName;
+
+        StringBuilder sb = new StringBuilder();
+        for (Double value : cirData) {
+            sb.append(value).append(",");
+        }
+        sb.append("\n");
+
+        try {
+            File file = new File(filePath);
+            FileWriter writer = new FileWriter(file, true); // true for append mode
+            writer.append(sb.toString());
+            writer.flush();
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
 
     private void receive(ArrayDeque<byte[]> datas) {
         SpannableStringBuilder spn = new SpannableStringBuilder();
+
         for (byte[] data : datas) {
+            long receiveTimestamp = System.currentTimeMillis(); // or System.nanoTime()
+            String dataString;
             if (flowControlFilter != null)
                 data = flowControlFilter.filter(data);
             if (hexEnabled) {
-                spn.append(TextUtil.toHexString(data)).append('\n');
+                String hexData = TextUtil.toHexString(data);
+                spn.append(hexData).append('\n');
+                // Log the hex data
+                logReceivedData(hexData + "\n");
             } else {
                 String msg = new String(data);
                 if (newline.equals(TextUtil.newline_crlf) && msg.length() > 0) {
@@ -417,10 +543,128 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     pendingNewline = msg.charAt(msg.length() - 1) == '\r';
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
+                logReceivedData(msg);
             }
+            String logEntry = System.lineSeparator() + "RECEIVE TIMESTAMP: " + receiveTimestamp + System.lineSeparator();
+            logReceivedData(logEntry);
+
+            // Process the received data
         }
         receiveText.append(spn);
     }
+    private void logIMUData(String data) {
+        new Thread(() -> {
+            String fileName = "imu_data_log.txt";
+            File filePath = new File(getActivity().getFilesDir(), fileName);
+
+            try {
+                FileWriter writer = new FileWriter(filePath, true); // 'true' for append mode
+                writer.append(data);
+                writer.flush();
+                writer.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }).start();
+    }
+    private void clearIMULogFile() {
+        String fileName = "imu_data_log.txt";
+        File filePath = new File(getActivity().getFilesDir(), fileName);
+
+        if (filePath.exists()) {
+            try {
+                FileWriter writer = new FileWriter(filePath, false); // 'false' to overwrite the file
+                writer.write("");
+                writer.flush();
+                writer.close();
+                Log.d("TerminalFragment", "IMU log file cleared");
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e("TerminalFragment", "Failed to clear IMU log file: " + e.getMessage());
+            }
+        }
+    }
+    private void logReceivedData(String data) {
+        String fileName = "received_data_log.txt";
+        File filePath = new File(getActivity().getFilesDir(), fileName);
+
+        try {
+            FileWriter writer = new FileWriter(filePath, true); // 'true' for append mode
+            writer.append(data);
+            writer.flush();
+            writer.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    private void shareLogFile() {
+        String fileName1 = "received_data_log.txt";
+        String fileName2 = "imu_data_log.txt";
+        File filePath1 = new File(getActivity().getFilesDir(), fileName1);
+        File filePath2 = new File(getActivity().getFilesDir(), fileName2);
+
+        ArrayList<Uri> filesToShare = new ArrayList<>();
+
+        if (filePath1.exists()) {
+            Uri fileUri1 = FileProvider.getUriForFile(getActivity(),
+                    getActivity().getPackageName() + ".fileprovider", filePath1);
+            filesToShare.add(fileUri1);
+        } else {
+            Toast.makeText(getActivity(), "Data log file not found", Toast.LENGTH_SHORT).show();
+        }
+
+        if (filePath2.exists()) {
+            Uri fileUri2 = FileProvider.getUriForFile(getActivity(),
+                    getActivity().getPackageName() + ".fileprovider", filePath2);
+            filesToShare.add(fileUri2);
+        } else {
+            Toast.makeText(getActivity(), "IMU log file not found", Toast.LENGTH_SHORT).show();
+        }
+
+        if (!filesToShare.isEmpty()) {
+            Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
+            intent.setType("text/plain");
+            intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, filesToShare);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            startActivity(Intent.createChooser(intent, "Share log files via"));
+        } else {
+            Toast.makeText(getActivity(), "No log files to share", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void clearLogFile() {
+        String fileName = "received_data_log.txt";
+        File filePath = new File(getActivity().getFilesDir(), fileName);
+
+        if (filePath.exists()) {
+            try {
+                // Overwrite the file with empty content to clear it
+                FileWriter writer = new FileWriter(filePath, false); // 'false' to overwrite the file
+                writer.write("");
+                writer.flush();
+                writer.close();
+                Log.d("TerminalFragment", "Log file cleared");
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e("TerminalFragment", "Failed to clear log file: " + e.getMessage());
+            }
+        } else {
+            // Optionally, create the file if it doesn't exist
+            try {
+                boolean created = filePath.createNewFile();
+                if (created) {
+                    Log.d("TerminalFragment", "Log file created");
+                } else {
+                    Log.e("TerminalFragment", "Failed to create log file");
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+
 
     void status(String str) {
         SpannableStringBuilder spn = new SpannableStringBuilder(str + '\n');
