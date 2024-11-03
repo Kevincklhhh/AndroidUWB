@@ -96,8 +96,10 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private String newline = TextUtil.newline_crlf;
 
     private SensorManager sensorManager;
-    private Sensor accelerometer;
+
+    private Sensor linearAccelerometer;
     private Sensor gyroscope;
+    private Sensor magnetometer;
     private SensorEventListener sensorEventListener;
 
 
@@ -174,12 +176,15 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             getActivity().runOnUiThread(this::connect);
         }
         if (sensorManager != null && sensorEventListener != null) {
-            int sensorDelay = SensorManager.SENSOR_DELAY_NORMAL; // Adjust the delay as needed
-            if (accelerometer != null) {
-                sensorManager.registerListener(sensorEventListener, accelerometer, sensorDelay);
+            int sensorDelay = SensorManager.SENSOR_DELAY_GAME; // Adjust the delay as needed
+            if (linearAccelerometer != null) {
+                sensorManager.registerListener(sensorEventListener, linearAccelerometer, sensorDelay);
             }
             if (gyroscope != null) {
                 sensorManager.registerListener(sensorEventListener, gyroscope, sensorDelay);
+            }
+            if (magnetometer != null) { // Add this block
+                sensorManager.registerListener(sensorEventListener, magnetometer, sensorDelay);
             }
         }
         if(connected == Connected.True)
@@ -236,8 +241,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
         sensorManager = (SensorManager) getActivity().getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
-            accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            linearAccelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
             gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+            magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
         } else {
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
@@ -254,7 +260,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             @Override
             public void onSensorChanged(SensorEvent event) {
                 long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
-                if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+                if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
                     float x = event.values[0];
                     float y = event.values[1];
                     float z = event.values[2];
@@ -268,6 +274,16 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     float z = event.values[2];
 
                     String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
+                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+                    logIMUData(logEntry);
+                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) { // Add this block
+                    // Handle magnetometer data
+                    float x = event.values[0];
+                    float y = event.values[1];
+                    float z = event.values[2];
+
+                    // Log magnetometer data
+                    String logEntry = "MAGNETOMETER TIMESTAMP: " + timestamp +
                             ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
                     logIMUData(logEntry);
                 }
@@ -545,7 +561,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
                 logReceivedData(msg);
             }
-            String logEntry = System.lineSeparator() + "RECEIVE TIMESTAMP: " + receiveTimestamp + System.lineSeparator();
+            String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
             logReceivedData(logEntry);
 
             // Process the received data
