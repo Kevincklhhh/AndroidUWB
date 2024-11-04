@@ -16,7 +16,8 @@ public class MainActivity extends AppCompatActivity implements FragmentManager.O
         setSupportActionBar(toolbar);
         getSupportFragmentManager().addOnBackStackChangedListener(this);
         if (savedInstanceState == null)
-            getSupportFragmentManager().beginTransaction().add(R.id.fragment, new DevicesFragment(), "devices").commit();
+            //getSupportFragmentManager().beginTransaction().add(R.id.fragment, new DevicesFragment(), "devices").commit();
+            getSupportFragmentManager().beginTransaction().add(R.id.fragment, new TestFragment(), "test").commit(); // Changed here
         else
             onBackStackChanged();
     }

@@ -1,0 +1,25 @@
+<!-- fragment_test.xml -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:layout_height="match_parent">
+
+    <Button
+        android:id="@+id/button_run_tests"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Run Tests" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <TextView
+            android:id="@+id/textview_test_results"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Test Results will appear here"
+            android:padding="8dp" />
+    </ScrollView>
+</LinearLayout>

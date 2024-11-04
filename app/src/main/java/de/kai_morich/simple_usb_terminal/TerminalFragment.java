@@ -52,6 +52,7 @@ import com.hoho.android.usbserial.util.XonXoffFilter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,6 +60,12 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import android.net.Uri;
 import androidx.core.content.FileProvider;
@@ -101,6 +108,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Sensor gyroscope;
     private Sensor magnetometer;
     private SensorEventListener sensorEventListener;
+    private StringBuilder dataBuffer = new StringBuilder();
+    private BlockingQueue<Map<String, Object>> cirDataQueue = new LinkedBlockingQueue<>();
 
 
     public TerminalFragment() {
@@ -176,7 +185,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             getActivity().runOnUiThread(this::connect);
         }
         if (sensorManager != null && sensorEventListener != null) {
-            int sensorDelay = SensorManager.SENSOR_DELAY_GAME; // Adjust the delay as needed
+            int sensorDelay = SensorManager.SENSOR_DELAY_NORMAL; // Adjust the delay as needed
             if (linearAccelerometer != null) {
                 sensorManager.registerListener(sensorEventListener, linearAccelerometer, sensorDelay);
             }
@@ -259,34 +268,34 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         sensorEventListener = new SensorEventListener() {
             @Override
             public void onSensorChanged(SensorEvent event) {
-                long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
-                if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
-                    float x = event.values[0];
-                    float y = event.values[1];
-                    float z = event.values[2];
-
-                    String logEntry = "ACCELEROMETER TIMESTAMP: " + timestamp +
-                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-                    logIMUData(logEntry);
-                } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-                    float x = event.values[0];
-                    float y = event.values[1];
-                    float z = event.values[2];
-
-                    String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
-                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-                    logIMUData(logEntry);
-                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) { // Add this block
-                    // Handle magnetometer data
-                    float x = event.values[0];
-                    float y = event.values[1];
-                    float z = event.values[2];
-
-                    // Log magnetometer data
-                    String logEntry = "MAGNETOMETER TIMESTAMP: " + timestamp +
-                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-                    logIMUData(logEntry);
-                }
+//                long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
+//                if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+//                    float x = event.values[0];
+//                    float y = event.values[1];
+//                    float z = event.values[2];
+//
+//                    String logEntry = "ACCELEROMETER TIMESTAMP: " + timestamp +
+//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+//                    logIMUData(logEntry);
+//                } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+//                    float x = event.values[0];
+//                    float y = event.values[1];
+//                    float z = event.values[2];
+//
+//                    String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
+//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+//                    logIMUData(logEntry);
+//                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) { // Add this block
+//                    // Handle magnetometer data
+//                    float x = event.values[0];
+//                    float y = event.values[1];
+//                    float z = event.values[2];
+//
+//                    // Log magnetometer data
+//                    String logEntry = "MAGNETOMETER TIMESTAMP: " + timestamp +
+//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+//                    logIMUData(logEntry);
+//                }
             }
 
             @Override
@@ -532,8 +541,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         SpannableStringBuilder spn = new SpannableStringBuilder();
 
         for (byte[] data : datas) {
-            long receiveTimestamp = System.currentTimeMillis(); // or System.nanoTime()
-            String dataString;
             if (flowControlFilter != null)
                 data = flowControlFilter.filter(data);
             if (hexEnabled) {
@@ -559,15 +566,219 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     pendingNewline = msg.charAt(msg.length() - 1) == '\r';
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
-                logReceivedData(msg);
+                //logReceivedData(msg);
+                String receivedString = new String(data, StandardCharsets.UTF_8);
+                synchronized (dataBuffer) {
+                    dataBuffer.append(receivedString);
+                }
+                if (receivedString.contains("!")) {
+                    // Process the data in the buffer
+                    processDataBuffer();
+                }
+
             }
-            String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
-            logReceivedData(logEntry);
 
             // Process the received data
         }
         receiveText.append(spn);
     }
+    private void processDataBuffer() {
+        synchronized (dataBuffer) {
+            String data = dataBuffer.toString();
+            int index = 0;
+
+            while (true) {
+                int endIndex = data.indexOf('!', index);
+                if (endIndex == -1) {
+                    // No complete message found, exit
+                    // Remove processed data up to index
+                    dataBuffer.delete(0, index);
+                    break;
+                }
+
+                // Extract the message up to '!'
+                String completeMessage = data.substring(index, endIndex + 1); // include '!'
+
+                // Process the complete message
+                processCompleteMessage(completeMessage);
+
+                // Move index past the end of this message
+                index = endIndex + 1;
+                data = dataBuffer.toString(); // Update data in case dataBuffer was modified in processing
+            }
+
+            // Remove processed data from buffer
+            dataBuffer.delete(0, index);
+        }
+    }
+
+    private void processCompleteMessage(String message) {
+        // Initialize variables
+        String fpIndex = null;
+        List<Integer> cirRealValues = new ArrayList<>();
+        List<Integer> cirImagValues = new ArrayList<>();
+        int dCm = -1;
+
+        // Patterns
+        Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
+        Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
+        Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
+        Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
+
+        // Find FPindex
+        Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
+        if (fpIndexMatcher.find()) {
+            fpIndex = fpIndexMatcher.group(1);
+        }
+
+        // Find CIR_real_values
+        Matcher cirRealValuesMatcher = cirRealValuesPattern.matcher(message);
+        if (cirRealValuesMatcher.find()) {
+            String numbersString = cirRealValuesMatcher.group(1);
+            cirRealValues = extractNumbers(numbersString);
+        }
+
+        // Find CIR_imag_values
+        Matcher cirImagValuesMatcher = cirImagValuesPattern.matcher(message);
+        if (cirImagValuesMatcher.find()) {
+            String numbersString = cirImagValuesMatcher.group(1);
+            cirImagValues = extractNumbers(numbersString);
+        }
+
+        // Find D_cm
+        Matcher dCmMatcher = dCmPattern.matcher(message);
+        if (dCmMatcher.find()) {
+            dCm = Integer.parseInt(dCmMatcher.group(1));
+        }
+
+        // Now, process the CIR data
+        if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
+            // Process the CIR block
+            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
+        } else {
+            // Missing data, handle error
+            Log.e("CIRParser", "Incomplete CIR data");
+        }
+    }
+    private List<Integer> extractNumbers(String s) {
+        List<Integer> numbers = new ArrayList<>();
+        Pattern numberPattern = Pattern.compile("-?\\d+");
+        Matcher matcher = numberPattern.matcher(s);
+        while (matcher.find()) {
+            numbers.add(Integer.parseInt(matcher.group()));
+        }
+        return numbers;
+    }
+
+    private void processCirData(String fpIndex, List<Integer> cirRealValues, List<Integer> cirImagValues, int dCm) {
+        Map<String, Object> cirData = new HashMap<>();
+        cirData.put("fpIndex", fpIndex);
+        cirData.put("cirRealValues", cirRealValues);
+        cirData.put("cirImagValues", cirImagValues);
+        cirData.put("dCm", dCm);
+
+        // Enqueue the CIR data for processing
+        try {
+            cirDataQueue.put(cirData);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+    private ExecutorService processingExecutor = Executors.newSingleThreadExecutor();
+
+    public void startProcessing() {
+        processingExecutor.execute(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    Map<String, Object> cirData = cirDataQueue.take();
+                    // Process the CIR data
+                    processCirDataAsync(cirData);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+    }
+    private void processCirDataAsync(Map<String, Object> cirData) {
+        String fpIndex = (String) cirData.get("fpIndex");
+        List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
+        List<Integer> cirImagValues = (List<Integer>) cirData.get("cirImagValues");
+        int dCm = (int) cirData.get("dCm");
+
+        // Convert FPindex from hex to fixed-point decimal
+        double firstPathIndex = hexToFixedPoint(fpIndex);
+
+        // Convert CIR values to arrays
+        double[] cirRealArray = cirRealValues.stream().mapToDouble(Integer::doubleValue).toArray();
+        double[] cirImagArray = cirImagValues.stream().mapToDouble(Integer::doubleValue).toArray();
+
+        // Compute CIR magnitude
+        double[] cirMagnitude = new double[cirRealArray.length];
+        for (int i = 0; i < cirRealArray.length; i++) {
+            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
+        }
+
+        // Proceed with upsampling, aligning, feature extraction, and classification
+        double[] upsampledCIR = upsample(cirMagnitude);
+//        double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
+//        Map<String, Double> features = extractFeatures(alignedCIR);
+//
+//        // Classify
+//        int label = classify(features);
+
+        // Update UI or handle the classification result
+        // Ensure UI updates are run on the main thread
+//        Handler mainHandler = new Handler(Looper.getMainLooper());
+//        mainHandler.post(() -> {
+//            displayClassificationResult(label);
+//        });
+    }
+    public double[] upsample(double[] cirData) {
+        int originalLength = cirData.length;
+        int upsampleFactor = 64;
+        int upsampledLength = originalLength * upsampleFactor;
+        double[] upsampledData = new double[upsampledLength];
+
+        for (int i = 0; i < originalLength - 1; i++) {
+            for (int j = 0; j < upsampleFactor; j++) {
+                double fraction = j / (double) upsampleFactor;
+                upsampledData[i * upsampleFactor + j] = cirData[i] + fraction * (cirData[i + 1] - cirData[i]);
+            }
+        }
+        // Handle the last point
+        upsampledData[upsampledLength - 1] = cirData[originalLength - 1];
+
+        return upsampledData;
+    }
+
+
+
+    private double hexToFixedPoint(String hexValue) {
+        // Remove any leading '0x' or leading zeros
+        hexValue = hexValue.replace("0x", "").replaceAll("^0+", "");
+
+        if (hexValue.isEmpty()) {
+            return 0.0;
+        }
+
+        int intValue = Integer.parseInt(hexValue, 16);
+        String binValue = String.format("%16s", Integer.toBinaryString(intValue)).replace(' ', '0');
+        String integerPart = binValue.substring(0, 10);
+        String fractionalPart = binValue.substring(10);
+
+        int integerValue = Integer.parseInt(integerPart, 2);
+        double fractionalValue = 0.0;
+        for (int i = 0; i < fractionalPart.length(); i++) {
+            if (fractionalPart.charAt(i) == '1') {
+                fractionalValue += Math.pow(2, -(i + 1));
+            }
+        }
+        return integerValue + fractionalValue;
+    }
+
+
+
+
     private void logIMUData(String data) {
         new Thread(() -> {
             String fileName = "imu_data_log.txt";
