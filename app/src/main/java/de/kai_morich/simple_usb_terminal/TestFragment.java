@@ -22,6 +22,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.jtransforms.fft.DoubleFFT_1D;
 
 /**
  * A simple {@link Fragment} subclass.
@@ -43,16 +44,11 @@ public class TestFragment extends Fragment {
     private TextView textViewTestResults;
 
     // Hardcoded test data based on the provided data
-    private String fpIndexTestData = "0000B8C6";
-    private int dCmTestData = 13;
-
-    private double[] cirRealTestData = {
-            -6.0, -10.0, 14.0, -19.0, -23.0, -33.0, 13.0, 11.0, 28.0, 3.0, -5.0, 37.0, 19.0, 40.0, 12.0, 1.0, 15.0, 20.0, 5.0, -25.0, -38.0, -14.0, -5.0, -8.0, -20.0, -6.0, 26.0, 29.0, 62.0, 10.0, -11.0, -2.0, 22.0, -2.0, 7.0, -1.0, 3.0, -36.0, -344.0, -1184.0, -2099.0, -2272.0, -1446.0, 123.0, 877.0, 511.0, 43.0, -129.0, -18.0, 47.0, 21.0, -6.0, 73.0, 110.0, 53.0, 8.0, -5.0, -1.0, 38.0, 99.0, 112.0, 85.0, 14.0, -97.0, -130.0, -89.0, 30.0, 142.0, 180.0, 110.0, 62.0, 3.0, -14.0, -3.0, 16.0, 74.0, 78.0, 63.0, 96.0, 102.0, 111.0, 62.0, 89.0, 38.0, 23.0, 13.0, 2.0, 6.0, 18.0, -14.0, -25.0, -22.0, -6.0, -23.0, -46.0, -24.0, -27.0, 5.0, 4.0, 2.0
-    };
-
-    private double[] cirImagTestData = {
-            -16.0, -28.0, -19.0, -15.0, -31.0, -23.0, -25.0, 1.0, -24.0, -21.0, -29.0, -10.0, 2.0, 36.0, 16.0, -11.0, -9.0, -4.0, -28.0, 15.0, -35.0, -13.0, 2.0, 4.0, 24.0, 31.0, 5.0, 7.0, -6.0, 3.0, -14.0, -18.0, 1.0, 20.0, 16.0, -24.0, -49.0, -27.0, -40.0, -15.0, 187.0, 530.0, 787.0, 449.0, -171.0, -470.0, -238.0, 29.0, 44.0, -90.0, -167.0, -170.0, -195.0, -136.0, -33.0, 29.0, 77.0, 91.0, 147.0, 114.0, 86.0, 68.0, 52.0, 46.0, 17.0, 62.0, 117.0, 94.0, 5.0, -106.0, -149.0, -98.0, -38.0, -27.0, -40.0, -75.0, -84.0, -29.0, 44.0, 49.0, 12.0, -7.0, -72.0, -33.0, -36.0, -21.0, 30.0, 18.0, -36.0, -59.0, -57.0, -4.0, -16.0, -22.0, -17.0, -12.0, -45.0, -92.0, -72.0, -41.0
-    };
+    String fpIndexTestData = "0000B9E7";
+    long timestampTestData = 1729703683716L;
+    int dCmTestData = 37;
+    double[] cirRealTestData = { 6d, 22d, -11d, -7d, 3d, 2d, 15d, 8d, -40d, -36d, -36d, 5d, 15d, 24d, 8d, -26d, -36d, -7d, -12d, -2d, -2d, -13d, -37d, -73d, -45d, -14d, 22d, 36d, 6d, -34d, -58d, -5d, 0d, 24d, 21d, 15d, 41d, -33d, -28d, -1d, 20d, -14d, -103d, -506d, -1198d, -1712d, -1487d, -769d, -270d, -299d, -563d, -585d, -196d, 95d, 163d, 23d, -54d, -37d, 64d, 132d, 80d, -56d, -98d, -66d, 10d, 49d, 117d, 187d, 157d, 91d, 61d, 65d, 92d, 67d, 13d, 21d, 52d, 33d, 17d, 34d, 83d, 52d, -30d, -23d, -27d, -5d, 12d, 6d, 2d, -35d, -9d, 32d, 28d, 30d, 7d, 37d, 4d, -3d, 17d, 58d };
+    double[] cirImagTestData = { 26d, -6d, 10d, -9d, -5d, -9d, 34d, 46d, 5d, 35d, 9d, -23d, -47d, 70d, 98d, 70d, 27d, 29d, 16d, -13d, 34d, -12d, 3d, 28d, 18d, 50d, 21d, -5d, -16d, -23d, -28d, -60d, -5d, 16d, 9d, -11d, -30d, -13d, -2d, -2d, -3d, 4d, 64d, 312d, 668d, 748d, 296d, -432d, -752d, -519d, -67d, 478d, 805d, 745d, 441d, -84d, -380d, -387d, -238d, -124d, -86d, -62d, 19d, 48d, 45d, 15d, 31d, -11d, -96d, -160d, -33d, 8d, 42d, 45d, 40d, 40d, 34d, 13d, -10d, -48d, -27d, -1d, 22d, 23d, 42d, 88d, 53d, 13d, 23d, 34d, 0d, -16d, -6d, 23d, 13d, -14d, -18d, 18d, -2d, 30d };
 
     private double firstPathIndexTestData;
 
@@ -111,35 +107,69 @@ public class TestFragment extends Fragment {
             runTests();
         });
     }
+    public static double[] trimArray(double[] array, int start, int end) {
+        if (array.length <= (start + end)) {
+            return new double[0]; // Return an empty array if there aren't enough elements
+        }
+
+        int newLength = array.length - start - end;
+        double[] trimmedArray = new double[newLength];
+
+        System.arraycopy(array, start, trimmedArray, 0, newLength);
+
+        return trimmedArray;
+    }
     private void runTests() {
         StringBuilder results = new StringBuilder();
+
+        long startTime = System.nanoTime();
+        long endTime = System.nanoTime();
 
         results.append("FPindex: ").append(fpIndexTestData).append("\n");
         results.append("First Path Index: ").append(firstPathIndexTestData).append("\n");
         results.append("D_cm: ").append(dCmTestData).append("\n\n");
+        cirRealTestData = trimArray(cirRealTestData, 10, 20);
+        cirImagTestData = trimArray(cirImagTestData, 10, 20);
 
+        startTime = System.nanoTime();
         // Step 1: Calculate CIR Magnitude
         double[] cirMagnitude = calculateCirMagnitude(cirRealTestData, cirImagTestData);
         results.append("CIR Magnitude: ").append(Arrays.toString(cirMagnitude)).append("\n\n");
+        endTime = System.nanoTime();
+        Log.d("Performance", "CIR Magnitude Calculation Time: " + (endTime - startTime) + " ns");
+
 
         // Step 2: Upsample the magnitude
-        double[] resampledMagnitude = upsample(cirMagnitude, upsampleFactor);
+        startTime = System.nanoTime();
+        double[] resampledMagnitude = resampleFFT(cirMagnitude, upsampleFactor * 70 );
+        //double[] resampledMagnitude = upsample(cirMagnitude, 64);
         results.append("Upsampled Magnitude Length: ").append(resampledMagnitude.length).append("\n\n");
+        endTime = System.nanoTime();
+        Log.d("Performance", "Upsampling Time: " + (endTime - startTime) + " ns");
+
 
         // Step 3: Calculate adjusted index and align
+        startTime = System.nanoTime();
         int adjustedIndex = calculateAdjustedIndex(firstPathIndexTestData, upsampleFactor);
         results.append("Adjusted Index: ").append(adjustedIndex).append("\n\n");
-
         double[] alignedCIR = alignCirMagnitude(resampledMagnitude, adjustedIndex);
         results.append("Aligned CIR Magnitude Length: ").append(alignedCIR.length).append("\n\n");
+        endTime = System.nanoTime();
+        Log.d("Performance", "Alignment Time: " + (endTime - startTime) + " ns");
 
         // Step 4: Peak Detection
+        startTime = System.nanoTime();
         List<Integer> peakIndices = detectPeaks(alignedCIR, slopeThreshold, amplitudeThreshold, minDistance);
         results.append("Detected Peaks: ").append(peakIndices.toString()).append("\n\n");
+        endTime = System.nanoTime();
+        Log.d("Performance", "Peak Detection Time: " + (endTime - startTime) + " ns");
 
         // Step 5: Feature Extraction
+        startTime = System.nanoTime();
         Map<String, Object> features = extractFeatures(alignedCIR, peakIndices);
         results.append("Extracted Features: ").append(features.toString()).append("\n\n");
+        endTime = System.nanoTime();
+        Log.d("Performance", "Feature Extraction Time: " + (endTime - startTime) + " ns");
 
         // Display results
         textViewTestResults.setText(results.toString());
@@ -153,6 +183,50 @@ public class TestFragment extends Fragment {
         Log.d("TestFragment", "CIR Magnitude: " + Arrays.toString(cirMagnitude));
         return cirMagnitude;
     }
+    public double[] resampleFFT(double[] signal, int newLength) {
+        int originalLength = signal.length;
+
+        // Compute the FFT of the signal
+        DoubleFFT_1D fftDo = new DoubleFFT_1D(originalLength);
+        double[] fft = new double[2 * originalLength];
+        System.arraycopy(signal, 0, fft, 0, originalLength);
+        fftDo.realForwardFull(fft);
+
+        // Number of FFT points (complex numbers)
+        int numFFTPoints = fft.length / 2;
+
+        // Determine the scaling factor
+        double scale = (double) newLength / originalLength;
+
+        // Adjust the FFT to the new length
+        int newNumFFTPoints = newLength;
+        double[] newFFT = new double[2 * newNumFFTPoints];
+
+        int minPoints = Math.min(numFFTPoints, newNumFFTPoints);
+        int halfPoints = minPoints / 2;
+
+        // Copy the positive frequencies
+        System.arraycopy(fft, 0, newFFT, 0, 2 * halfPoints);
+
+        // If upsampling, zero-pad the remaining frequencies
+        // If downsampling, higher frequencies are discarded automatically
+
+        // Copy the negative frequencies
+        System.arraycopy(fft, fft.length - 2 * halfPoints, newFFT, newFFT.length - 2 * halfPoints, 2 * halfPoints);
+
+        // Inverse FFT to get the resampled signal
+        DoubleFFT_1D ifftDo = new DoubleFFT_1D(newLength);
+        ifftDo.complexInverse(newFFT, true);
+
+        // Extract the real part of the inverse FFT result
+        double[] resampledSignal = new double[newLength];
+        for (int i = 0; i < newLength; i++) {
+            resampledSignal[i] = newFFT[2 * i] * scale;
+        }
+
+        return resampledSignal;
+    }
+
     private double[] upsample(double[] data, int upsampleFactor) {
         int originalLength = data.length;
         int upsampledLength = originalLength * upsampleFactor;
@@ -171,7 +245,7 @@ public class TestFragment extends Fragment {
     }
 
     private int calculateAdjustedIndex(double firstPathIndex, int upsampleFactor) {
-        return (int) Math.round((firstPathIndex - 721) * upsampleFactor);
+        return (int) Math.round((firstPathIndex - 731) * upsampleFactor);
     }
 
     private double[] alignCirMagnitude(double[] resampledMagnitude, int adjustedIndex) {
@@ -198,6 +272,7 @@ public class TestFragment extends Fragment {
         double[] firstDerivative = computeGradient(data);
         double[] secondDerivative = computeGradient(firstDerivative);
 
+        // Step 1: Detect potential merged peaks without applying minDistance
         List<Integer> potentialMergedPeaks = new ArrayList<>();
         for (int j = 1; j < data.length - 1; j++) {
             boolean slopeCondition = Math.abs(firstDerivative[j]) < slopeThreshold;
@@ -209,17 +284,21 @@ public class TestFragment extends Fragment {
             }
         }
 
-        List<Integer> mergedPeaks = applyMinDistanceCriterion(potentialMergedPeaks, minDistance);
-        List<Integer> regularPeaks = findRegularPeaks(data, amplitudeThreshold, minDistance);
+        // Step 2: Detect regular peaks without applying minDistance
+        List<Integer> regularPeaks = findRegularPeaksWithoutMinDistance(data, amplitudeThreshold);
 
-        Set<Integer> allPeaksSet = new HashSet<>(mergedPeaks);
+        // Step 3: Combine all peaks into a single list
+        Set<Integer> allPeaksSet = new HashSet<>(potentialMergedPeaks);
         allPeaksSet.addAll(regularPeaks);
         List<Integer> allPeaks = new ArrayList<>(allPeaksSet);
-        Collections.sort(allPeaks);
 
-        Log.d("TestFragment", "All Peaks: " + allPeaks.toString());
-        return allPeaks;
+        // Step 4: Apply minDistance criterion to all peaks, prioritizing higher amplitude peaks
+        List<Integer> filteredPeaks = applyMinDistanceCriterionToAllPeaks(allPeaks, data, minDistance);
+
+        Log.d("TestFragment", "Filtered Peaks: " + filteredPeaks.toString());
+        return filteredPeaks;
     }
+
 
     private double[] computeGradient(double[] data) {
         double[] gradient = new double[data.length];
@@ -231,29 +310,43 @@ public class TestFragment extends Fragment {
         return gradient;
     }
 
-    private List<Integer> applyMinDistanceCriterion(List<Integer> peaks, int minDistance) {
+    private List<Integer> applyMinDistanceCriterionToAllPeaks(List<Integer> peaks, double[] data, int minDistance) {
+        // Sort peaks by amplitude in descending order
+        peaks.sort((p1, p2) -> Double.compare(data[p2], data[p1]));
+
         List<Integer> filteredPeaks = new ArrayList<>();
-        int lastPeak = -minDistance;
+        boolean[] removed = new boolean[data.length];
+
         for (int peak : peaks) {
-            if (peak - lastPeak >= minDistance) {
+            if (!removed[peak]) {
                 filteredPeaks.add(peak);
-                lastPeak = peak;
+                // Mark peaks within minDistance as removed
+                int start = Math.max(peak - minDistance, 0);
+                int end = Math.min(peak + minDistance, data.length - 1);
+                for (int i = start; i <= end; i++) {
+                    removed[i] = true;
+                }
+                removed[peak] = false; // Keep the current peak
             }
         }
+
+        // Sort the filtered peaks by their original indices
+        filteredPeaks.sort(Integer::compareTo);
+
         return filteredPeaks;
     }
 
-    private List<Integer> findRegularPeaks(double[] data, double amplitudeThreshold, int minDistance) {
+
+    private List<Integer> findRegularPeaksWithoutMinDistance(double[] data, double amplitudeThreshold) {
         List<Integer> peaks = new ArrayList<>();
         for (int i = 1; i < data.length - 1; i++) {
             if (data[i] > amplitudeThreshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
-                if (peaks.isEmpty() || i - peaks.get(peaks.size() - 1) >= minDistance) {
-                    peaks.add(i);
-                }
+                peaks.add(i);
             }
         }
         return peaks;
     }
+
 
     private Map<String, Object> extractFeatures(double[] alignedCIR, List<Integer> peakIndices) {
         Map<String, Object> features = new HashMap<>();
