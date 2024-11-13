@@ -52,14 +52,20 @@ import com.hoho.android.usbserial.util.XonXoffFilter;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -76,6 +82,9 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 
+import org.json.JSONObject;
+import org.jtransforms.fft.DoubleFFT_1D;
+import de.kai_morich.simple_usb_terminal.RandomForestClassifier;
 public class TerminalFragment extends Fragment implements ServiceConnection, SerialListener {
 
     private enum Connected { False, Pending, True }
@@ -107,11 +116,35 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Sensor linearAccelerometer;
     private Sensor gyroscope;
     private Sensor magnetometer;
-    private SensorEventListener sensorEventListener;
     private StringBuilder dataBuffer = new StringBuilder();
     private BlockingQueue<Map<String, Object>> cirDataQueue = new LinkedBlockingQueue<>();
+    private RandomForestClassifier model;
+    private Map<Integer, String> labelMapping;
+
+    private int CIRlength = 70;
+    // Thresholds
+    private static final float GYROSCOPE_THRESHOLD = 1.2f; // Adjust as needed
+    private static final float MAGNETOMETER_THRESHOLD = 30.0f; // Adjust as needed
+    private float lastGyroMagnitude = 0.0f;
+
+    // Debounce durations (in milliseconds)
+    private static final long ENTER_DEBOUNCE_DURATION = 300;
+    private static final long EXIT_DEBOUNCE_DURATION = 1000;
+
+    // Timestamps
+    private long gyroThresholdStartTime = 0;
+    private long sensorsBelowThresholdStartTime = 0;
+    // List to store magnetometer magnitudes during Movement Detection State
+    private List<Float> magnetometerMagnitudes = new ArrayList<>();
+    private static final float MAGNETOMETER_FLUCTUATION_THRESHOLD = 5.0f; // in µT
+    private float lastMagnetometerMagnitude = 0.0f;
 
 
+    private enum MovementState {
+        IDLE,
+        UWB_RANGING, MOVEMENT_DETECTION
+    }
+    private MovementState currentState = MovementState.IDLE;
     public TerminalFragment() {
         mainLooper = new Handler(Looper.getMainLooper());
         broadcastReceiver = new BroadcastReceiver() {
@@ -136,14 +169,39 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         deviceId = getArguments().getInt("device");
         portNum = getArguments().getInt("port");
         baudRate = getArguments().getInt("baud");
+        startProcessing();
+        model = new RandomForestClassifier();
+        labelMapping = loadLabelMapping(getContext());
     }
-
+    private Map<Integer, String> loadLabelMapping(Context context) {
+        Map<Integer, String> labelMapping = new HashMap<>();
+        try {
+            InputStream is = context.getAssets().open("label_mapping_inverse.json");
+            int size = is.available();
+            byte[] buffer = new byte[size];
+            is.read(buffer);
+            is.close();
+            String jsonString = new String(buffer, "UTF-8");
+            JSONObject jsonObject = new JSONObject(jsonString);
+            Iterator<String> keys = jsonObject.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                int intKey = Integer.parseInt(key);
+                String value = jsonObject.getString(key);
+                labelMapping.put(intKey, value);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return labelMapping;
+    }
     @Override
     public void onDestroy() {
         if (connected != Connected.False)
             disconnect();
         getActivity().stopService(new Intent(getActivity(), SerialService.class));
         super.onDestroy();
+        processingExecutor.shutdownNow();
     }
 
     @Override
@@ -184,17 +242,12 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             initialStart = false;
             getActivity().runOnUiThread(this::connect);
         }
-        if (sensorManager != null && sensorEventListener != null) {
-            int sensorDelay = SensorManager.SENSOR_DELAY_NORMAL; // Adjust the delay as needed
-            if (linearAccelerometer != null) {
-                sensorManager.registerListener(sensorEventListener, linearAccelerometer, sensorDelay);
-            }
-            if (gyroscope != null) {
-                sensorManager.registerListener(sensorEventListener, gyroscope, sensorDelay);
-            }
-            if (magnetometer != null) { // Add this block
-                sensorManager.registerListener(sensorEventListener, magnetometer, sensorDelay);
-            }
+        if (currentState == MovementState.IDLE) {
+            sensorManager.registerListener(sensorEventListener, gyroscope, 100000);
+        } else if (currentState == MovementState.MOVEMENT_DETECTION) {
+            sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(sensorEventListener, magnetometer, SensorManager.SENSOR_DELAY_GAME);
         }
         if(connected == Connected.True)
             controlLines.start();
@@ -257,53 +310,277 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
 
+        enterIdleState();
         // Initialize and register the sensor event listener
-        initSensorEventListener();
+        //initSensorEventListener();
 
         // Clear the IMU log file when the view is created
         clearIMULogFile();
         return view;
     }
-    private void initSensorEventListener() {
-        sensorEventListener = new SensorEventListener() {
-            @Override
-            public void onSensorChanged(SensorEvent event) {
-//                long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
-//                if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
-//                    float x = event.values[0];
-//                    float y = event.values[1];
-//                    float z = event.values[2];
-//
-//                    String logEntry = "ACCELEROMETER TIMESTAMP: " + timestamp +
-//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-//                    logIMUData(logEntry);
-//                } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-//                    float x = event.values[0];
-//                    float y = event.values[1];
-//                    float z = event.values[2];
-//
-//                    String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
-//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-//                    logIMUData(logEntry);
-//                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) { // Add this block
-//                    // Handle magnetometer data
-//                    float x = event.values[0];
-//                    float y = event.values[1];
-//                    float z = event.values[2];
-//
-//                    // Log magnetometer data
-//                    String logEntry = "MAGNETOMETER TIMESTAMP: " + timestamp +
-//                            ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
-//                    logIMUData(logEntry);
-//                }
-            }
+    private SensorEventListener sensorEventListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            long timestamp = System.currentTimeMillis(); // Get current timestamp
 
-            @Override
-            public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                // Handle changes in sensor accuracy if needed
+            switch (event.sensor.getType()) {
+                case Sensor.TYPE_GYROSCOPE:
+                    handleGyroscopeData(event.values, timestamp);
+                    break;
+
+                case Sensor.TYPE_LINEAR_ACCELERATION:
+                    handleAccelerometerData(event.values, timestamp);
+                    break;
+
+                case Sensor.TYPE_MAGNETIC_FIELD:
+                    handleMagnetometerData(event.values, timestamp);
+                    break;
             }
-        };
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            // Handle changes in sensor accuracy if needed
+        }
+    };
+    private void handleGyroscopeData(float[] values, long timestamp) {
+        float gyroMagnitude = (float) Math.sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
+        lastGyroMagnitude = gyroMagnitude;
+        String data = String.format(
+                "GYROSCOPE TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
+                timestamp, values[0], values[1], values[2]
+        );
+        logIMUData(data);
+        if (currentState == MovementState.IDLE) {
+            if (gyroMagnitude > GYROSCOPE_THRESHOLD) {
+                    enterMovementDetectionState();
+            }
+        } else if (currentState == MovementState.MOVEMENT_DETECTION) {
+            checkForExitCondition();
+        }
     }
+    private void handleAccelerometerData(float[] values, long timestamp) {
+        String data = String.format(
+                "ACCELEROMETER TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
+                timestamp, values[0], values[1], values[2]
+        );
+        logIMUData(data);
+        if (currentState == MovementState.MOVEMENT_DETECTION) {
+            float accelerometerMagnitude = (float) Math.sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
+        }
+    }
+    private void handleMagnetometerData(float[] values, long timestamp) {
+        float magnetometerMagnitude = (float) Math.sqrt(
+                values[0] * values[0] +
+                        values[1] * values[1] +
+                        values[2] * values[2]
+        );
+        lastMagnetometerMagnitude = magnetometerMagnitude;
+
+        // Format and log magnetometer data
+        String data = String.format(
+                "MAGNETOMETER TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
+                timestamp, values[0], values[1], values[2]
+        );
+        logIMUData(data);
+        if (currentState == MovementState.MOVEMENT_DETECTION) {
+            // Store the magnetometer magnitude
+            magnetometerMagnitudes.add(magnetometerMagnitude);
+        }
+    }
+    private void checkForExitCondition() {
+        boolean gyroBelowThreshold = lastGyroMagnitude < GYROSCOPE_THRESHOLD;
+
+        if (gyroBelowThreshold) {
+            if (sensorsBelowThresholdStartTime == 0) {
+                sensorsBelowThresholdStartTime = System.currentTimeMillis();
+            } else if (System.currentTimeMillis() - sensorsBelowThresholdStartTime >= EXIT_DEBOUNCE_DURATION) {
+                // Before entering Idle State, check for UWB ranging condition
+                checkForUwbRangingCondition();
+
+                // If still in MOVEMENT_DETECTION, transition to Idle
+                if (currentState == MovementState.MOVEMENT_DETECTION) {
+                    enterIdleState();
+                }
+                // If transitioned to UWB_RANGING, do not enter Idle State
+            }
+        } else {
+            sensorsBelowThresholdStartTime = 0;
+        }
+    }
+    private void checkForUwbRangingCondition() {
+        if (magnetometerMagnitudes.isEmpty()) {
+            return;
+        }
+
+        // Log original magnetometer magnitudes
+        logReceivedData("Magnetometer Magnitudes Before Filter: " + magnetometerMagnitudes.toString()+"\n");
+
+        // Apply a median filter or remove outliers
+        List<Float> filteredMagnitudes = filterMagnetometerData(magnetometerMagnitudes);
+
+        // Log filtered magnetometer magnitudes
+        logReceivedData("Magnetometer Magnitudes After Filter: " + filteredMagnitudes.toString()+"\n");
+
+        if (filteredMagnitudes.isEmpty()) {
+            // No valid data after filtering
+            return;
+        }
+
+        // Calculate max and min of filtered data
+        float maxMagnitude = Collections.max(filteredMagnitudes);
+        float minMagnitude = Collections.min(filteredMagnitudes);
+        float magnitudeDifference = Math.abs(maxMagnitude - minMagnitude);
+
+        // Check if the magnitude difference exceeds the threshold
+        if (magnitudeDifference >= MAGNETOMETER_FLUCTUATION_THRESHOLD) {
+            // Log that the condition has been met
+            String data = String.format(
+                    "CONDITION_MET TIMESTAMP: %d, Ready to enter UWB Ranging State\n",
+                    System.currentTimeMillis()
+            );
+            logIMUData(data);
+
+            // Transition to UWB Ranging State
+            enterUwbRangingState();
+        }
+    }
+    private List<Float> filterMagnetometerData(List<Float> data) {
+        // Calculate mean and standard deviation
+        double sum = 0.0;
+        for (float value : data) {
+            sum += value;
+        }
+        double mean = sum / data.size();
+
+        double varianceSum = 0.0;
+        for (float value : data) {
+            varianceSum += Math.pow(value - mean, 2);
+        }
+        double standardDeviation = Math.sqrt(varianceSum / data.size());
+
+        // Remove outliers beyond 2 standard deviations
+        List<Float> filteredData = new ArrayList<>();
+        for (float value : data) {
+            if (Math.abs(value - mean) <= 2 * standardDeviation) {
+                filteredData.add(value);
+            }
+        }
+        return filteredData;
+    }
+
+    private void enterMovementDetectionState() {
+        currentState = MovementState.MOVEMENT_DETECTION;
+        gyroThresholdStartTime = 0;
+        sensorsBelowThresholdStartTime = 0;
+
+        // Clear previous magnetometer data
+        magnetometerMagnitudes.clear();
+
+        // Unregister gyroscope at normal delay
+        sensorManager.unregisterListener(sensorEventListener, gyroscope);
+
+        // Register sensors at game delay
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
+        sensorManager.registerListener(sensorEventListener, magnetometer, SensorManager.SENSOR_DELAY_GAME);
+
+        // Log state transition
+        String data = String.format(
+                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: MOVEMENT_DETECTION\n",
+                System.currentTimeMillis()
+        );
+        logIMUData(data);
+
+        // Update receiveText on the main thread
+        updateReceiveText("Entered Movement Detection State");
+    }
+
+    private void enterIdleState() {
+        currentState = MovementState.IDLE;
+        gyroThresholdStartTime = 0;
+        sensorsBelowThresholdStartTime = 0;
+
+        // Unregister all sensors
+        sensorManager.unregisterListener(sensorEventListener);
+
+        // Register gyroscope at normal delay
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_NORMAL);
+
+        // Clear magnetometer data
+        magnetometerMagnitudes.clear();
+
+        // Log state transition
+        String data = String.format(
+                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: IDLE\n",
+                System.currentTimeMillis()
+        );
+        logIMUData(data);
+
+        // Update receiveText on the main thread
+        updateReceiveText("Entered Idle State");
+    }
+    private void enterUwbRangingState() {
+        currentState = MovementState.UWB_RANGING;
+
+        // Unregister all sensors
+        sensorManager.unregisterListener(sensorEventListener);
+
+        // Log state transition
+        String data = String.format(
+                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: UWB_RANGING\n",
+                System.currentTimeMillis()
+        );
+        logIMUData(data);
+
+        // Update receiveText on the main thread
+        updateReceiveText("Entered UWB Ranging State");
+
+        // Send command to UWB board
+        send("initf 4 9600");
+
+        // Clear magnetometer data
+        magnetometerMagnitudes.clear();
+    }
+    private void enterIdleStateFromUwb() {
+        currentState = MovementState.IDLE;
+
+        // Unregister all sensors
+        sensorManager.unregisterListener(sensorEventListener);
+
+        // Register gyroscope at normal delay
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_NORMAL);
+
+        // Log state transition
+        String data = String.format(
+                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: IDLE\n",
+                System.currentTimeMillis()
+        );
+        logIMUData(data);
+
+        // Update receiveText on the main thread
+        updateReceiveText("Entered Idle State from UWB Ranging");
+
+        // Send command "stop"
+        send("stop");
+
+
+        // Reset debounce timers
+        gyroThresholdStartTime = 0;
+        sensorsBelowThresholdStartTime = 0;
+    }
+
+
+
+    private void updateReceiveText(String message) {
+        Handler mainHandler = new Handler(Looper.getMainLooper());
+        mainHandler.post(() -> {
+            SpannableStringBuilder spn = new SpannableStringBuilder(message + "\n");
+            spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            receiveText.append(spn);
+        });
+    }
+
 
     @Override
     public void onCreateOptionsMenu(@NonNull Menu menu, MenuInflater inflater) {
@@ -482,7 +759,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
             // Log the timestamp and the sent command to the log file
             String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
-            //logReceivedData(logEntry);
+            logReceivedData(logEntry);
             SpannableStringBuilder spn = new SpannableStringBuilder(msg + '\n');
             spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             receiveText.append(spn);
@@ -566,13 +843,14 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     pendingNewline = msg.charAt(msg.length() - 1) == '\r';
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
-                //logReceivedData(msg);
+                logReceivedData(msg);
                 String receivedString = new String(data, StandardCharsets.UTF_8);
                 synchronized (dataBuffer) {
                     dataBuffer.append(receivedString);
                 }
                 if (receivedString.contains("!")) {
                     // Process the data in the buffer
+                    //enterIdleStateFromUwb();
                     processDataBuffer();
                 }
 
@@ -580,7 +858,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
             // Process the received data
         }
-        receiveText.append(spn);
+        //receiveText.append(spn);
     }
     private void processDataBuffer() {
         synchronized (dataBuffer) {
@@ -718,37 +996,98 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
         }
 
-        // Proceed with upsampling, aligning, feature extraction, and classification
-        double[] upsampledCIR = upsample(cirMagnitude);
-//        double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
-//        Map<String, Double> features = extractFeatures(alignedCIR);
-//
-//        // Classify
-//        int label = classify(features);
+        // Proceed with upsampling
+        double[] upsampledCIR = resampleFFT(cirMagnitude,64 * CIRlength);
+
+        // Align the upsampled CIR using the first path index
+        double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
+
+        // Detect peaks in the aligned CIR
+        List<Integer> peakIndices = detectPeaks(alignedCIR);
+
+        // Extract features from the aligned CIR and peaks
+        Map<String, Double> features = extractFeatures(alignedCIR, peakIndices);
+
+        // Prepare the feature vector in the correct order
+        double[] featureVector = new double[] {
+                features.getOrDefault("Num_Peaks", 0.0),
+                features.getOrDefault("Pmax", 0.0),
+                features.getOrDefault("Tmax", 0.0),
+                features.getOrDefault("P_pos_ratio_1", 1.0),
+                features.getOrDefault("P_power_ratio_1", 1.0),
+                features.getOrDefault("T_pos_distance_1", 0.0),
+                features.getOrDefault("T_power_distance_1", 0.0),
+                features.getOrDefault("P_pos_ratio_2", 1.0),
+                features.getOrDefault("P_power_ratio_2", 1.0),
+                features.getOrDefault("T_pos_distance_2", 0.0),
+                features.getOrDefault("T_power_distance_2", 0.0),
+                features.getOrDefault("P_pos_ratio_3", 1.0),
+                features.getOrDefault("P_power_ratio_3", 1.0),
+                features.getOrDefault("T_pos_distance_3", 0.0),
+                features.getOrDefault("T_power_distance_3", 0.0)
+        };
+
+        // Classify using the model
+        double[] prediction = model.score(featureVector);
+
+        // Interpret the prediction
+        int predictedLabel = argMax(prediction);
+        String className = labelMapping.get(predictedLabel);
 
         // Update UI or handle the classification result
         // Ensure UI updates are run on the main thread
-//        Handler mainHandler = new Handler(Looper.getMainLooper());
-//        mainHandler.post(() -> {
-//            displayClassificationResult(label);
-//        });
-    }
-    public double[] upsample(double[] cirData) {
-        int originalLength = cirData.length;
-        int upsampleFactor = 64;
-        int upsampledLength = originalLength * upsampleFactor;
-        double[] upsampledData = new double[upsampledLength];
-
-        for (int i = 0; i < originalLength - 1; i++) {
-            for (int j = 0; j < upsampleFactor; j++) {
-                double fraction = j / (double) upsampleFactor;
-                upsampledData[i * upsampleFactor + j] = cirData[i] + fraction * (cirData[i + 1] - cirData[i]);
+        Handler mainHandler = new Handler(Looper.getMainLooper());
+        mainHandler.post(() -> {
+            logReceivedData("Classification Result"+predictedLabel+"\n");
+            updateReceiveText("Classification Result"+predictedLabel+"\n");
+            if (currentState == MovementState.UWB_RANGING) {
+                //enterIdleStateFromUwb();
             }
-        }
-        // Handle the last point
-        upsampledData[upsampledLength - 1] = cirData[originalLength - 1];
+        });
+    }
 
-        return upsampledData;
+    public double[] resampleFFT(double[] signal, int newLength) {
+        int originalLength = signal.length;
+
+        // Compute the FFT of the signal
+        DoubleFFT_1D fftDo = new DoubleFFT_1D(originalLength);
+        double[] fft = new double[2 * originalLength];
+        System.arraycopy(signal, 0, fft, 0, originalLength);
+        fftDo.realForwardFull(fft);
+
+        // Number of FFT points (complex numbers)
+        int numFFTPoints = fft.length / 2;
+
+        // Determine the scaling factor
+        double scale = (double) newLength / originalLength;
+
+        // Adjust the FFT to the new length
+        int newNumFFTPoints = newLength;
+        double[] newFFT = new double[2 * newNumFFTPoints];
+
+        int minPoints = Math.min(numFFTPoints, newNumFFTPoints);
+        int halfPoints = minPoints / 2;
+
+        // Copy the positive frequencies
+        System.arraycopy(fft, 0, newFFT, 0, 2 * halfPoints);
+
+        // If upsampling, zero-pad the remaining frequencies
+        // If downsampling, higher frequencies are discarded automatically
+
+        // Copy the negative frequencies
+        System.arraycopy(fft, fft.length - 2 * halfPoints, newFFT, newFFT.length - 2 * halfPoints, 2 * halfPoints);
+
+        // Inverse FFT to get the resampled signal
+        DoubleFFT_1D ifftDo = new DoubleFFT_1D(newLength);
+        ifftDo.complexInverse(newFFT, true);
+
+        // Extract the real part of the inverse FFT result
+        double[] resampledSignal = new double[newLength];
+        for (int i = 0; i < newLength; i++) {
+            resampledSignal[i] = newFFT[2 * i] * scale;
+        }
+
+        return resampledSignal;
     }
 
 
@@ -775,6 +1114,223 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
         return integerValue + fractionalValue;
     }
+
+    private double[] alignCir(double[] resampledMagnitude, double firstPathIndex) {
+        int upsampleFactor = 64;
+        int adjustedIndex = (int) Math.round((firstPathIndex - 801 + CIRlength) * upsampleFactor);
+
+        double[] alignedCIR;
+        if (adjustedIndex < 0) {
+            int startIndex = -adjustedIndex;
+            if (startIndex >= resampledMagnitude.length) {
+                alignedCIR = new double[0];
+            } else {
+                alignedCIR = Arrays.copyOfRange(resampledMagnitude, startIndex, resampledMagnitude.length);
+            }
+        } else {
+            if (adjustedIndex >= resampledMagnitude.length) {
+                alignedCIR = new double[0];
+            } else {
+                alignedCIR = Arrays.copyOfRange(resampledMagnitude, adjustedIndex, resampledMagnitude.length);
+            }
+        }
+        return alignedCIR;
+    }
+    private List<Integer> detectPeaks(double[] data) {
+        double slopeThreshold = 1.0;
+        double amplitudeThreshold = 290.0;
+        int minDistance = 100;
+
+        double[] firstDerivative = computeGradient(data);
+        double[] secondDerivative = computeGradient(firstDerivative);
+
+        // Identify potential merged peaks
+        List<Integer> potentialMergedPeaks = new ArrayList<>();
+        for (int j = 1; j < data.length - 1; j++) {
+            boolean slopeCondition = Math.abs(firstDerivative[j]) < slopeThreshold;
+            boolean convexityCondition = secondDerivative[j - 1] * secondDerivative[j + 1] < 0;
+            boolean amplitudeCondition = data[j] > amplitudeThreshold;
+
+            if (slopeCondition && convexityCondition && amplitudeCondition) {
+                potentialMergedPeaks.add(j);
+            }
+        }
+
+        // Detect regular peaks without applying minDistance
+        List<Integer> regularPeaks = findRegularPeaksWithoutMinDistance(data, amplitudeThreshold);
+
+        // Combine all peaks
+        Set<Integer> allPeaksSet = new HashSet<>(potentialMergedPeaks);
+        allPeaksSet.addAll(regularPeaks);
+        List<Integer> allPeaks = new ArrayList<>(allPeaksSet);
+
+        // Apply minimum distance criterion to all peaks, prioritizing higher amplitude peaks
+        List<Integer> filteredPeaks = applyMinDistanceCriterionToAllPeaks(allPeaks, data, minDistance);
+
+        return filteredPeaks;
+    }
+
+    private double[] computeGradient(double[] data) {
+        double[] gradient = new double[data.length];
+        gradient[0] = data[1] - data[0];
+        for (int i = 1; i < data.length - 1; i++) {
+            gradient[i] = (data[i + 1] - data[i - 1]) / 2.0;
+        }
+        gradient[data.length - 1] = data[data.length - 1] - data[data.length - 2];
+        return gradient;
+    }
+
+    private List<Integer> findRegularPeaksWithoutMinDistance(double[] data, double amplitudeThreshold) {
+        List<Integer> peaks = new ArrayList<>();
+        for (int i = 1; i < data.length - 1; i++) {
+            if (data[i] > amplitudeThreshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
+                peaks.add(i);
+            }
+        }
+        return peaks;
+    }
+
+    private List<Integer> applyMinDistanceCriterionToAllPeaks(List<Integer> peaks, double[] data, int minDistance) {
+        // Sort peaks by amplitude in descending order
+        peaks.sort((p1, p2) -> Double.compare(data[p2], data[p1]));
+
+        List<Integer> filteredPeaks = new ArrayList<>();
+        boolean[] removed = new boolean[data.length];
+
+        for (int peak : peaks) {
+            if (!removed[peak]) {
+                filteredPeaks.add(peak);
+                // Mark peaks within minDistance as removed
+                int start = Math.max(peak - minDistance, 0);
+                int end = Math.min(peak + minDistance, data.length - 1);
+                for (int i = start; i <= end; i++) {
+                    removed[i] = true;
+                }
+                removed[peak] = false; // Keep the current peak
+            }
+        }
+
+        // Sort the filtered peaks by their original indices
+        filteredPeaks.sort(Integer::compareTo);
+
+        return filteredPeaks;
+    }
+
+    private Map<String, Double> extractFeatures(double[] alignedCIR, List<Integer> peakIndices) {
+        Map<String, Double> features = new HashMap<>();
+
+        double[] peakMagnitudes = new double[peakIndices.size()];
+        for (int i = 0; i < peakIndices.size(); i++) {
+            peakMagnitudes[i] = alignedCIR[peakIndices.get(i)];
+        }
+
+        int[] sortedByPosition = sortIndicesByValues(peakIndices.stream().mapToInt(Integer::intValue).toArray());
+        int[] sortedByMagnitude = sortIndicesByValuesDescending(peakMagnitudes);
+
+        int numPeaks = peakIndices.size();
+        int p = 4;
+
+        List<Double> P_pos_ratios = new ArrayList<>();
+        List<Double> P_power_ratios = new ArrayList<>();
+        List<Integer> T_pos_distances = new ArrayList<>();
+        List<Integer> T_power_distances = new ArrayList<>();
+
+        if (numPeaks > 1) {
+            int numRatios = Math.min(p - 1, numPeaks - 1);
+
+            // Calculate position-based ratios and distances
+            for (int j = 1; j <= numRatios; j++) {
+                double P_pos_ratio = peakMagnitudes[sortedByPosition[0]] / peakMagnitudes[sortedByPosition[j]];
+                P_pos_ratios.add(P_pos_ratio);
+
+                int T_pos_distance = peakIndices.get(sortedByPosition[j]) - peakIndices.get(sortedByPosition[0]);
+                T_pos_distances.add(T_pos_distance);
+            }
+
+            // Calculate magnitude-based ratios and distances
+            for (int j = 1; j <= numRatios; j++) {
+                double P_power_ratio = peakMagnitudes[sortedByMagnitude[0]] / peakMagnitudes[sortedByMagnitude[j]];
+                P_power_ratios.add(P_power_ratio);
+
+                int T_power_distance = peakIndices.get(sortedByMagnitude[j]) - peakIndices.get(sortedByMagnitude[0]);
+                T_power_distances.add(T_power_distance);
+            }
+        } else {
+            P_pos_ratios.add(1.0);
+            P_power_ratios.add(1.0);
+            T_pos_distances.add(0);
+            T_power_distances.add(0);
+        }
+
+        double Pmax = numPeaks > 0 ? peakMagnitudes[sortedByMagnitude[0]] : 0;
+        int Tmax = numPeaks > 0 ? peakIndices.get(sortedByMagnitude[0]) : 0;
+
+        // Ensure the lists have exactly 3 elements
+        while (P_pos_ratios.size() < 3) P_pos_ratios.add(1.0);
+        while (P_power_ratios.size() < 3) P_power_ratios.add(1.0);
+        while (T_pos_distances.size() < 3) T_pos_distances.add(0);
+        while (T_power_distances.size() < 3) T_power_distances.add(0);
+
+        // Store features in the specified order
+        features.put("Num_Peaks", (double) numPeaks);
+        features.put("Pmax", Pmax);
+        features.put("Tmax", (double) Tmax);
+
+        features.put("P_pos_ratio_1", P_pos_ratios.get(0));
+        features.put("P_power_ratio_1", P_power_ratios.get(0));
+        features.put("T_pos_distance_1", (double) T_pos_distances.get(0));
+        features.put("T_power_distance_1", (double) T_power_distances.get(0));
+
+        features.put("P_pos_ratio_2", P_pos_ratios.get(1));
+        features.put("P_power_ratio_2", P_power_ratios.get(1));
+        features.put("T_pos_distance_2", (double) T_pos_distances.get(1));
+        features.put("T_power_distance_2", (double) T_power_distances.get(1));
+
+        features.put("P_pos_ratio_3", P_pos_ratios.get(2));
+        features.put("P_power_ratio_3", P_power_ratios.get(2));
+        features.put("T_pos_distance_3", (double) T_pos_distances.get(2));
+        features.put("T_power_distance_3", (double) T_power_distances.get(2));
+
+        return features;
+    }
+
+    private int argMax(double[] inputs) {
+        int maxIndex = 0;
+        double maxValue = inputs[0];
+        for (int i = 1; i < inputs.length; i++) {
+            if (inputs[i] > maxValue) {
+                maxValue = inputs[i];
+                maxIndex = i;
+            }
+        }
+        return maxIndex;
+    }
+//    private void displayClassificationResult(String className) {
+//        // Update your UI elements here
+//        // For example, display the class name in a TextView
+//        TextView resultTextView = getView().findViewById(R.id.resultTextView);
+//        resultTextView.setText("Predicted Class: " + className);
+//    }
+
+
+    private int[] sortIndicesByValues(int[] values) {
+        Integer[] indices = new Integer[values.length];
+        for (int i = 0; i < values.length; i++) {
+            indices[i] = i;
+        }
+        Arrays.sort(indices,Comparator.comparingInt(i -> values[i]));
+        return Arrays.stream(indices).mapToInt(Integer::intValue).toArray();
+    }
+
+    private int[] sortIndicesByValuesDescending(double[] values) {
+        Integer[] indices = new Integer[values.length];
+        for (int i = 0; i < values.length; i++) {
+            indices[i] = i;
+        }
+        Arrays.sort(indices, (i1, i2) -> Double.compare(values[i2], values[i1]));
+        return Arrays.stream(indices).mapToInt(Integer::intValue).toArray();
+    }
+
 
 
 

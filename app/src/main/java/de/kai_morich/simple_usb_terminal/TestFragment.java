@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jtransforms.fft.DoubleFFT_1D;
+import de.kai_morich.simple_usb_terminal.RandomForestClassifier;
 
 /**
  * A simple {@link Fragment} subclass.
@@ -57,6 +58,8 @@ public class TestFragment extends Fragment {
     private double slopeThreshold = 1;
     private double amplitudeThreshold = 290;
     private int minDistance = 100;
+    private Map<Integer, String> labelMapping;
+    private RandomForestClassifier model;
 
     public TestFragment() {
         // Required empty public constructor
@@ -87,6 +90,10 @@ public class TestFragment extends Fragment {
             mParam1 = getArguments().getString(ARG_PARAM1);
             mParam2 = getArguments().getString(ARG_PARAM2);
         }
+        //labelMapping = loadLabelMapping(getApplicationContext());
+
+        // Initialize the model
+        model = new RandomForestClassifier();
     }
 
     @Override
@@ -166,13 +173,38 @@ public class TestFragment extends Fragment {
 
         // Step 5: Feature Extraction
         startTime = System.nanoTime();
-        Map<String, Object> features = extractFeatures(alignedCIR, peakIndices);
+        Map<String, Double> features = extractFeatures(alignedCIR, peakIndices);
         results.append("Extracted Features: ").append(features.toString()).append("\n\n");
+        double[] featureVector = new double[] {
+                features.getOrDefault("Num_Peaks", 0.0),
+                features.getOrDefault("Pmax", 0.0),
+                features.getOrDefault("Tmax", 0.0),
+                features.getOrDefault("P_pos_ratio_1", 1.0),
+                features.getOrDefault("P_power_ratio_1", 1.0),
+                features.getOrDefault("T_pos_distance_1", 0.0),
+                features.getOrDefault("T_power_distance_1", 0.0),
+                features.getOrDefault("P_pos_ratio_2", 1.0),
+                features.getOrDefault("P_power_ratio_2", 1.0),
+                features.getOrDefault("T_pos_distance_2", 0.0),
+                features.getOrDefault("T_power_distance_2", 0.0),
+                features.getOrDefault("P_pos_ratio_3", 1.0),
+                features.getOrDefault("P_power_ratio_3", 1.0),
+                features.getOrDefault("T_pos_distance_3", 0.0),
+                features.getOrDefault("T_power_distance_3", 0.0)
+        };
+
+
         endTime = System.nanoTime();
         Log.d("Performance", "Feature Extraction Time: " + (endTime - startTime) + " ns");
+        startTime = System.nanoTime();
+        double[] prediction = model.score(featureVector);
+        endTime = System.nanoTime();
+        Log.d("Performance", "Classification Time: " + (endTime - startTime) + " ns");
+        //Arrays.toString(prediction);
 
         // Display results
-        textViewTestResults.setText(results.toString());
+        //textViewTestResults.setText(results.toString());
+        textViewTestResults.setText(Arrays.toString(prediction));
     }
     private double[] calculateCirMagnitude(double[] cirReal, double[] cirImag) {
         int length = cirReal.length;
@@ -348,8 +380,8 @@ public class TestFragment extends Fragment {
     }
 
 
-    private Map<String, Object> extractFeatures(double[] alignedCIR, List<Integer> peakIndices) {
-        Map<String, Object> features = new HashMap<>();
+    private Map<String, Double> extractFeatures(double[] alignedCIR, List<Integer> peakIndices) {
+        Map<String, Double> features = new HashMap<>();
 
         double[] peakMagnitudes = new double[peakIndices.size()];
         for (int i = 0; i < peakIndices.size(); i++) {
@@ -368,7 +400,10 @@ public class TestFragment extends Fragment {
         List<Integer> T_power_distances = new ArrayList<>();
 
         if (numPeaks > 1) {
-            for (int j = 1; j < Math.min(p, numPeaks); j++) {
+            int numRatios = Math.min(p - 1, numPeaks - 1);
+
+            // Calculate position-based ratios and distances
+            for (int j = 1; j <= numRatios; j++) {
                 double P_pos_ratio = peakMagnitudes[sortedByPosition[0]] / peakMagnitudes[sortedByPosition[j]];
                 P_pos_ratios.add(P_pos_ratio);
 
@@ -376,7 +411,8 @@ public class TestFragment extends Fragment {
                 T_pos_distances.add(T_pos_distance);
             }
 
-            for (int j = 1; j < Math.min(p, numPeaks); j++) {
+            // Calculate magnitude-based ratios and distances
+            for (int j = 1; j <= numRatios; j++) {
                 double P_power_ratio = peakMagnitudes[sortedByMagnitude[0]] / peakMagnitudes[sortedByMagnitude[j]];
                 P_power_ratios.add(P_power_ratio);
 
@@ -393,17 +429,37 @@ public class TestFragment extends Fragment {
         double Pmax = numPeaks > 0 ? peakMagnitudes[sortedByMagnitude[0]] : 0;
         int Tmax = numPeaks > 0 ? peakIndices.get(sortedByMagnitude[0]) : 0;
 
-        features.put("P_pos_ratios", P_pos_ratios);
-        features.put("P_power_ratios", P_power_ratios);
-        features.put("T_pos_distances", T_pos_distances);
-        features.put("T_power_distances", T_power_distances);
+        // Store features in the correct order
+        features.put("Num_Peaks", (double) numPeaks);
         features.put("Pmax", Pmax);
-        features.put("Tmax", Tmax);
-        features.put("Num_Peaks", numPeaks);
+        features.put("Tmax", (double) Tmax);
+
+        // Ensure the lists have exactly 3 elements
+        while (P_pos_ratios.size() < 3) P_pos_ratios.add(1.0);
+        while (P_power_ratios.size() < 3) P_power_ratios.add(1.0);
+        while (T_pos_distances.size() < 3) T_pos_distances.add(0);
+        while (T_power_distances.size() < 3) T_power_distances.add(0);
+
+        // Store features in the specified order
+        features.put("P_pos_ratio_1", P_pos_ratios.get(0));
+        features.put("P_power_ratio_1", P_power_ratios.get(0));
+        features.put("T_pos_distance_1", (double) T_pos_distances.get(0));
+        features.put("T_power_distance_1", (double) T_power_distances.get(0));
+
+        features.put("P_pos_ratio_2", P_pos_ratios.get(1));
+        features.put("P_power_ratio_2", P_power_ratios.get(1));
+        features.put("T_pos_distance_2", (double) T_pos_distances.get(1));
+        features.put("T_power_distance_2", (double) T_power_distances.get(1));
+
+        features.put("P_pos_ratio_3", P_pos_ratios.get(2));
+        features.put("P_power_ratio_3", P_power_ratios.get(2));
+        features.put("T_pos_distance_3", (double) T_pos_distances.get(2));
+        features.put("T_power_distance_3", (double) T_power_distances.get(2));
 
         Log.d("TestFragment", "Extracted Features: " + features.toString());
         return features;
     }
+
 
     private int[] sortIndicesByValues(int[] values) {
         Integer[] indices = new Integer[values.length];
