@@ -139,6 +139,18 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private static final float MAGNETOMETER_FLUCTUATION_THRESHOLD = 5.0f; // in µT
     private float lastMagnetometerMagnitude = 0.0f;
 
+    // List to store features of collected CIRs
+    private List<Map<String, Double>> collectedFeatures = new ArrayList<>();
+
+    // List to store classification results
+    private List<Integer> classificationResults = new ArrayList<>();
+
+    // Number of CIRs to collect
+    private static final int NUM_CIRS_TO_COLLECT = 5;
+
+    // Variance thresholds for features (adjust these thresholds based on your data)
+    private Map<String, Double> varianceThresholds = new HashMap<>();
+
 
     private enum MovementState {
         IDLE,
@@ -977,6 +989,17 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             }
         });
     }
+    private void initializeVarianceThresholds() {
+        varianceThresholds.put("Num_Peaks", 0.5);
+        varianceThresholds.put("Pmax", 50.0);
+        varianceThresholds.put("Tmax", 10.0);
+        varianceThresholds.put("P_pos_ratio_1", 0.2);
+        varianceThresholds.put("P_power_ratio_1", 0.2);
+        varianceThresholds.put("T_pos_distance_1", 5.0);
+        varianceThresholds.put("T_power_distance_1", 5.0);
+        // Add thresholds for other features as needed
+    }
+
     private void processCirDataAsync(Map<String, Object> cirData) {
         String fpIndex = (String) cirData.get("fpIndex");
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
@@ -997,53 +1020,175 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // Proceed with upsampling
-        double[] upsampledCIR = resampleFFT(cirMagnitude,64 * CIRlength);
+        double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
 
         // Align the upsampled CIR using the first path index
         double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
 
-        // Detect peaks in the aligned CIR
+        // Detect peaks in the alignedCIR
         List<Integer> peakIndices = detectPeaks(alignedCIR);
 
         // Extract features from the aligned CIR and peaks
         Map<String, Double> features = extractFeatures(alignedCIR, peakIndices);
 
-        // Prepare the feature vector in the correct order
-        double[] featureVector = new double[] {
-                features.getOrDefault("Num_Peaks", 0.0),
-                features.getOrDefault("Pmax", 0.0),
-                features.getOrDefault("Tmax", 0.0),
-                features.getOrDefault("P_pos_ratio_1", 1.0),
-                features.getOrDefault("P_power_ratio_1", 1.0),
-                features.getOrDefault("T_pos_distance_1", 0.0),
-                features.getOrDefault("T_power_distance_1", 0.0),
-                features.getOrDefault("P_pos_ratio_2", 1.0),
-                features.getOrDefault("P_power_ratio_2", 1.0),
-                features.getOrDefault("T_pos_distance_2", 0.0),
-                features.getOrDefault("T_power_distance_2", 0.0),
-                features.getOrDefault("P_pos_ratio_3", 1.0),
-                features.getOrDefault("P_power_ratio_3", 1.0),
-                features.getOrDefault("T_pos_distance_3", 0.0),
-                features.getOrDefault("T_power_distance_3", 0.0)
-        };
+        // Store features
+        synchronized (collectedFeatures) {
+            collectedFeatures.add(features);
+        }
 
-        // Classify using the model
-        double[] prediction = model.score(featureVector);
+        // Check if we have collected enough CIRs
+        if (collectedFeatures.size() >= NUM_CIRS_TO_COLLECT) {
+            // Evaluate feature variance
+            boolean isStable = evaluateFeatureVariance(collectedFeatures);
 
-        // Interpret the prediction
-        int predictedLabel = argMax(prediction);
-        String className = labelMapping.get(predictedLabel);
+            if (isStable) {
+                // Proceed with classification and majority voting
+                classifyCollectedCIRs();
+            } else {
+                // Data is unstable, discard and start over
+                synchronized (collectedFeatures) {
+                    collectedFeatures.clear();
+                }
+                synchronized (classificationResults) {
+                    classificationResults.clear();
+                }
+                // Optionally log or display a message indicating instability
+                Handler mainHandler = new Handler(Looper.getMainLooper());
+                mainHandler.post(() -> {
+                    logReceivedData("Data unstable, collecting new CIRs...\n");
+                });
+            }
+        }
+    }
+    private boolean evaluateFeatureVariance(List<Map<String, Double>> featuresList) {
+        Map<String, List<Double>> featureValuesMap = new HashMap<>();
 
-        // Update UI or handle the classification result
-        // Ensure UI updates are run on the main thread
+        // Collect all values for each feature
+        for (Map<String, Double> features : featuresList) {
+            for (String featureName : features.keySet()) {
+                if (!featureValuesMap.containsKey(featureName)) {
+                    featureValuesMap.put(featureName, new ArrayList<>());
+                }
+                featureValuesMap.get(featureName).add(features.get(featureName));
+            }
+        }
+
+        // Calculate variance for each feature
+        for (String featureName : featureValuesMap.keySet()) {
+            List<Double> values = featureValuesMap.get(featureName);
+            double variance = calculateVariance(values);
+
+            // Compare with threshold
+            double threshold = varianceThresholds.getOrDefault(featureName, Double.MAX_VALUE);
+            if (variance > threshold) {
+                Log.d("FeatureVariance", "Feature " + featureName + " variance " + variance + " exceeds threshold " + threshold);
+                return false; // Data is unstable
+            }
+        }
+
+        return true; // Data is stable
+    }
+
+    private double calculateVariance(List<Double> values) {
+        int n = values.size();
+        if (n == 0) return 0.0;
+
+        double mean = 0.0;
+        for (double v : values) {
+            mean += v;
+        }
+        mean /= n;
+
+        double variance = 0.0;
+        for (double v : values) {
+            variance += (v - mean) * (v - mean);
+        }
+        variance /= n;
+
+        return variance;
+    }
+
+    private void classifyCollectedCIRs() {
+        // Clear previous classification results
+        synchronized (classificationResults) {
+            classificationResults.clear();
+        }
+
+        // Classify each set of features
+        for (Map<String, Double> features : collectedFeatures) {
+            // Prepare the feature vector in the correct order
+            double[] featureVector = new double[] {
+                    features.getOrDefault("Num_Peaks", 0.0),
+                    features.getOrDefault("Pmax", 0.0),
+                    features.getOrDefault("Tmax", 0.0),
+                    features.getOrDefault("P_pos_ratio_1", 1.0),
+                    features.getOrDefault("P_power_ratio_1", 1.0),
+                    features.getOrDefault("T_pos_distance_1", 0.0),
+                    features.getOrDefault("T_power_distance_1", 0.0),
+                    features.getOrDefault("P_pos_ratio_2", 1.0),
+                    features.getOrDefault("P_power_ratio_2", 1.0),
+                    features.getOrDefault("T_pos_distance_2", 0.0),
+                    features.getOrDefault("T_power_distance_2", 0.0),
+                    features.getOrDefault("P_pos_ratio_3", 1.0),
+                    features.getOrDefault("P_power_ratio_3", 1.0),
+                    features.getOrDefault("T_pos_distance_3", 0.0),
+                    features.getOrDefault("T_power_distance_3", 0.0)
+            };
+
+            // Classify using the model
+            double[] prediction = model.score(featureVector);
+
+            // Interpret the prediction
+            int predictedLabel = argMax(prediction);
+
+            // Store the classification result
+            synchronized (classificationResults) {
+                classificationResults.add(predictedLabel);
+            }
+        }
+
+        // Perform majority voting
+        int finalPrediction = majorityVote(classificationResults);
+
+        // Get the class name
+        String className = labelMapping.get(finalPrediction);
+
+        // Transition back to Idle State and handle the result
         Handler mainHandler = new Handler(Looper.getMainLooper());
         mainHandler.post(() -> {
-            logReceivedData("Classification Result"+predictedLabel+"\n");
-            updateReceiveText("Classification Result"+predictedLabel+"\n");
+            logReceivedData("Final Classification Result: " + className + "\n");
+            // Optionally display the classification result
+            // displayClassificationResult(className);
+
             if (currentState == MovementState.UWB_RANGING) {
-                //enterIdleStateFromUwb();
+                enterIdleStateFromUwb();
             }
         });
+
+        // Clear the collected data
+        synchronized (collectedFeatures) {
+            collectedFeatures.clear();
+        }
+        synchronized (classificationResults) {
+            classificationResults.clear();
+        }
+    }
+    private int majorityVote(List<Integer> predictions) {
+        Map<Integer, Integer> voteCounts = new HashMap<>();
+        for (int prediction : predictions) {
+            voteCounts.put(prediction, voteCounts.getOrDefault(prediction, 0) + 1);
+        }
+
+        int maxVotes = 0;
+        int majorityLabel = -1;
+        for (Map.Entry<Integer, Integer> entry : voteCounts.entrySet()) {
+            if (entry.getValue() > maxVotes) {
+                maxVotes = entry.getValue();
+                majorityLabel = entry.getKey();
+            }
+        }
+
+        return majorityLabel;
     }
 
     public double[] resampleFFT(double[] signal, int newLength) {
