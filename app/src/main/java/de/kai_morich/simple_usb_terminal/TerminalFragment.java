@@ -1150,19 +1150,18 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // Perform majority voting
         int finalPrediction = majorityVote(classificationResults);
 
-        // Get the class name
-        String className = labelMapping.get(finalPrediction);
 
         // Transition back to Idle State and handle the result
         Handler mainHandler = new Handler(Looper.getMainLooper());
         mainHandler.post(() -> {
-            logReceivedData("Final Classification Result: " + className + "\n");
+            logReceivedData("Final Classification Result: " + finalPrediction + "\n");
+            updateReceiveText(String.valueOf(finalPrediction));
             // Optionally display the classification result
             // displayClassificationResult(className);
-
-            if (currentState == MovementState.UWB_RANGING) {
-                enterIdleStateFromUwb();
-            }
+// testing: stay in UWB ranging forever
+//            if (currentState == MovementState.UWB_RANGING) {
+//                enterIdleStateFromUwb();
+//            }
         });
 
         // Clear the collected data
