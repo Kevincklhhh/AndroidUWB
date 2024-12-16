@@ -426,13 +426,13 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // Log original magnetometer magnitudes
-        logReceivedData("Magnetometer Magnitudes Before Filter: " + magnetometerMagnitudes.toString()+"\n");
+        //logReceivedData("Magnetometer Magnitudes Before Filter: " + magnetometerMagnitudes.toString()+"\n");
 
         // Apply a median filter or remove outliers
         List<Float> filteredMagnitudes = filterMagnetometerData(magnetometerMagnitudes);
 
         // Log filtered magnetometer magnitudes
-        logReceivedData("Magnetometer Magnitudes After Filter: " + filteredMagnitudes.toString()+"\n");
+        //logReceivedData("Magnetometer Magnitudes After Filter: " + filteredMagnitudes.toString()+"\n");
 
         if (filteredMagnitudes.isEmpty()) {
             // No valid data after filtering
@@ -532,6 +532,17 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // Update receiveText on the main thread
         updateReceiveText("Entered Idle State");
     }
+    private static final int LOGGING_DURATION_MS = 10_000; // 10 seconds
+
+    private Handler uwbHandler = new Handler(Looper.getMainLooper());
+    private Runnable stopUwbRunnable = new Runnable() {
+        @Override
+        public void run() {
+            // After 10 seconds, transition to Idle state
+            enterIdleStateFromUwb();
+        }
+    };
+
     private void enterUwbRangingState() {
         currentState = MovementState.UWB_RANGING;
 
@@ -553,6 +564,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
         // Clear magnetometer data
         magnetometerMagnitudes.clear();
+        uwbHandler.postDelayed(stopUwbRunnable, LOGGING_DURATION_MS);
     }
     private void enterIdleStateFromUwb() {
         currentState = MovementState.IDLE;
@@ -580,6 +592,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // Reset debounce timers
         gyroThresholdStartTime = 0;
         sensorsBelowThresholdStartTime = 0;
+
+        uwbHandler.removeCallbacks(stopUwbRunnable);
     }
 
 
@@ -870,7 +884,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
             // Process the received data
         }
-        //receiveText.append(spn);
+        receiveText.append(spn);
     }
     private void processDataBuffer() {
         synchronized (dataBuffer) {
@@ -903,52 +917,53 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void processCompleteMessage(String message) {
-        // Initialize variables
-        String fpIndex = null;
-        List<Integer> cirRealValues = new ArrayList<>();
-        List<Integer> cirImagValues = new ArrayList<>();
-        int dCm = -1;
-
-        // Patterns
-        Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
-        Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
-        Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
-        Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
-
-        // Find FPindex
-        Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
-        if (fpIndexMatcher.find()) {
-            fpIndex = fpIndexMatcher.group(1);
-        }
-
-        // Find CIR_real_values
-        Matcher cirRealValuesMatcher = cirRealValuesPattern.matcher(message);
-        if (cirRealValuesMatcher.find()) {
-            String numbersString = cirRealValuesMatcher.group(1);
-            cirRealValues = extractNumbers(numbersString);
-        }
-
-        // Find CIR_imag_values
-        Matcher cirImagValuesMatcher = cirImagValuesPattern.matcher(message);
-        if (cirImagValuesMatcher.find()) {
-            String numbersString = cirImagValuesMatcher.group(1);
-            cirImagValues = extractNumbers(numbersString);
-        }
-
-        // Find D_cm
-        Matcher dCmMatcher = dCmPattern.matcher(message);
-        if (dCmMatcher.find()) {
-            dCm = Integer.parseInt(dCmMatcher.group(1));
-        }
-
-        // Now, process the CIR data
-        if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
-            // Process the CIR block
-            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
-        } else {
-            // Missing data, handle error
-            Log.e("CIRParser", "Incomplete CIR data");
-        }
+        //logReceivedData("CIR data raw msg: " + message + "\n");
+//        // Initialize variables
+//        String fpIndex = null;
+//        List<Integer> cirRealValues = new ArrayList<>();
+//        List<Integer> cirImagValues = new ArrayList<>();
+//        int dCm = -1;
+//
+//        // Patterns
+//        Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
+//        Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
+//        Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
+//        Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
+//
+//        // Find FPindex
+//        Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
+//        if (fpIndexMatcher.find()) {
+//            fpIndex = fpIndexMatcher.group(1);
+//        }
+//
+//        // Find CIR_real_values
+//        Matcher cirRealValuesMatcher = cirRealValuesPattern.matcher(message);
+//        if (cirRealValuesMatcher.find()) {
+//            String numbersString = cirRealValuesMatcher.group(1);
+//            cirRealValues = extractNumbers(numbersString);
+//        }
+//
+//        // Find CIR_imag_values
+//        Matcher cirImagValuesMatcher = cirImagValuesPattern.matcher(message);
+//        if (cirImagValuesMatcher.find()) {
+//            String numbersString = cirImagValuesMatcher.group(1);
+//            cirImagValues = extractNumbers(numbersString);
+//        }
+//
+//        // Find D_cm
+//        Matcher dCmMatcher = dCmPattern.matcher(message);
+//        if (dCmMatcher.find()) {
+//            dCm = Integer.parseInt(dCmMatcher.group(1));
+//        }
+//
+//        // Now, process the CIR data
+//        if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
+//            // Process the CIR block
+//            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
+//        } else {
+//            // Missing data, handle error
+//            Log.e("CIRParser", "Incomplete CIR data");
+//        }
     }
     private List<Integer> extractNumbers(String s) {
         List<Integer> numbers = new ArrayList<>();
