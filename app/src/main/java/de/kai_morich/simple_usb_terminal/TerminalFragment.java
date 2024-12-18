@@ -844,6 +844,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         SpannableStringBuilder spn = new SpannableStringBuilder();
 
         for (byte[] data : datas) {
+            long receiveTimestamp = System.currentTimeMillis();
             if (flowControlFilter != null)
                 data = flowControlFilter.filter(data);
             if (hexEnabled) {
@@ -881,7 +882,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 }
 
             }
-
+            String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
+            logReceivedData(logEntry);
             // Process the received data
         }
         receiveText.append(spn);
