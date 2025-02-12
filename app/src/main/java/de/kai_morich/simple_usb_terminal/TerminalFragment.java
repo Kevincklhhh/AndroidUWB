@@ -123,18 +123,35 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     private int CIRlength = 70;
     // Thresholds
-    private static final float GYROSCOPE_THRESHOLD = 1.2f; // Adjust as needed
+
     private static final float MAGNETOMETER_THRESHOLD = 30.0f; // Adjust as needed
     private float lastGyroMagnitude = 0.0f;
+    private float lastAccelMagnitude = 0f;
+
+    // -------------------- CONSTANTS & VARIABLES --------------------
+    private static final float ACCEL_THRESHOLD = 1.2f;             // Threshold for pickup detection using accelerometer
+    private static final float MOTION_THRESHOLD = 2.5f;            // Threshold for seat-change detection in MovementDetection
+    private static final float GYROSCOPE_THRESHOLD = 1.2f; // Adjust as needed
+    private static final long MOVEMENT_DETECTION_WINDOW_MS = 3000;  // 3 seconds (example)
+    private static final int LOGGING_DURATION_MS = 10_000;          // 10 seconds in UWB state
+
+
+    // Accumulator for MovementDetection
+    private float totalAccelerationMagnitude = 0f;
+    private int accelerationSampleCount = 0;
+
+    // Timestamps
+    private long sensorsBelowThresholdStartTime = 0;
+    private long movementDetectionStartTime = 0;
+    private long gyroThresholdStartTime = 0;
 
     // Debounce durations (in milliseconds)
     private static final long ENTER_DEBOUNCE_DURATION = 300;
     private static final long EXIT_DEBOUNCE_DURATION = 1000;
 
     // Timestamps
-    private long gyroThresholdStartTime = 0;
-    private long sensorsBelowThresholdStartTime = 0;
-    // List to store magnetometer magnitudes during Movement Detection State
+
+
     private List<Float> magnetometerMagnitudes = new ArrayList<>();
     private static final float MAGNETOMETER_FLUCTUATION_THRESHOLD = 5.0f; // in µT
     private float lastMagnetometerMagnitude = 0.0f;
@@ -178,6 +195,11 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         super.onCreate(savedInstanceState);
         setHasOptionsMenu(true);
         setRetainInstance(true);
+        // Clear the log file only if this is the first creation (i.e., savedInstanceState == null)
+        if (savedInstanceState == null) {
+            clearLogFile();
+            clearIMULogFile();
+        }
         deviceId = getArguments().getInt("device");
         portNum = getArguments().getInt("port");
         baudRate = getArguments().getInt("baud");
@@ -306,7 +328,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         sendText.addTextChangedListener(hexWatcher);
         sendText.setHint(hexEnabled ? "HEX mode" : "");
         // Clear the log file when the view is created
-        clearLogFile();
         View sendBtn = view.findViewById(R.id.send_btn);
         sendBtn.setOnClickListener(v -> send(sendText.getText().toString()));
         controlLines.onCreateView(view);
@@ -322,18 +343,17 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
 
-        enterIdleState();
+        enterIdleState("Initialize");
         // Initialize and register the sensor event listener
         //initSensorEventListener();
 
         // Clear the IMU log file when the view is created
-        clearIMULogFile();
         return view;
     }
     private SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
-            long timestamp = System.currentTimeMillis(); // Get current timestamp
+            long timestamp = System.currentTimeMillis();
 
             switch (event.sensor.getType()) {
                 case Sensor.TYPE_GYROSCOPE:
@@ -342,10 +362,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
                 case Sensor.TYPE_LINEAR_ACCELERATION:
                     handleAccelerometerData(event.values, timestamp);
-                    break;
-
-                case Sensor.TYPE_MAGNETIC_FIELD:
-                    handleMagnetometerData(event.values, timestamp);
                     break;
             }
         }
@@ -356,183 +372,182 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
     };
     private void handleGyroscopeData(float[] values, long timestamp) {
-        float gyroMagnitude = (float) Math.sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
+        float gyroMagnitude = (float) Math.sqrt(
+                values[0]*values[0] + values[1]*values[1] + values[2]*values[2]
+        );
         lastGyroMagnitude = gyroMagnitude;
+
+        // Logging
         String data = String.format(
-                "GYROSCOPE TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
-                timestamp, values[0], values[1], values[2]
+                "GYROSCOPE TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
+                timestamp, values[0], values[1], values[2], gyroMagnitude
         );
         logIMUData(data);
+
         if (currentState == MovementState.IDLE) {
+            // Pickup detection if gyroMagnitude exceeds threshold
             if (gyroMagnitude > GYROSCOPE_THRESHOLD) {
-                    enterMovementDetectionState();
+                enterMovementDetectionState("Gyroscope triggered pickup.");
             }
-        } else if (currentState == MovementState.MOVEMENT_DETECTION) {
+        }
+        else if (currentState == MovementState.MOVEMENT_DETECTION) {
             checkForExitCondition();
         }
     }
-    private void handleAccelerometerData(float[] values, long timestamp) {
-        String data = String.format(
-                "ACCELEROMETER TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
-                timestamp, values[0], values[1], values[2]
-        );
-        logIMUData(data);
-        if (currentState == MovementState.MOVEMENT_DETECTION) {
-            float accelerometerMagnitude = (float) Math.sqrt(values[0] * values[0] + values[1] * values[1] + values[2] * values[2]);
-        }
-    }
-    private void handleMagnetometerData(float[] values, long timestamp) {
-        float magnetometerMagnitude = (float) Math.sqrt(
-                values[0] * values[0] +
-                        values[1] * values[1] +
-                        values[2] * values[2]
-        );
-        lastMagnetometerMagnitude = magnetometerMagnitude;
 
-        // Format and log magnetometer data
+    // -------------------- ACCELEROMETER HANDLER --------------------
+    private void handleAccelerometerData(float[] values, long timestamp) {
+        float accelMagnitude = (float) Math.sqrt(
+                values[0]*values[0] + values[1]*values[1] + values[2]*values[2]
+        );
+        lastAccelMagnitude = accelMagnitude;
+
+        // Logging
         String data = String.format(
-                "MAGNETOMETER TIMESTAMP: %d, X: %.9f, Y: %.9f, Z: %.9f\n",
-                timestamp, values[0], values[1], values[2]
+                "ACCELEROMETER TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
+                timestamp, values[0], values[1], values[2], accelMagnitude
         );
         logIMUData(data);
-        if (currentState == MovementState.MOVEMENT_DETECTION) {
-            // Store the magnetometer magnitude
-            magnetometerMagnitudes.add(magnetometerMagnitude);
+
+        if (currentState == MovementState.IDLE) {
+            // Pickup detection if accelMagnitude exceeds threshold
+            if (accelMagnitude > ACCEL_THRESHOLD) {
+                enterMovementDetectionState("Accelerometer triggered pickup.");
+            }
+        }
+        else if (currentState == MovementState.MOVEMENT_DETECTION) {
+            // Accumulate total motion in MovementDetection
+            totalAccelerationMagnitude += accelMagnitude;
+            accelerationSampleCount++;
+
+            // Optional: if you want a fixed window for detection
+            if ((System.currentTimeMillis() - movementDetectionStartTime) > MOVEMENT_DETECTION_WINDOW_MS) {
+                checkForUwbRangingCondition();
+            }
         }
     }
+
     private void checkForExitCondition() {
-        boolean gyroBelowThreshold = lastGyroMagnitude < GYROSCOPE_THRESHOLD;
+        // We use the gyroscope to see if the phone is now stable (below threshold)
+        boolean gyroBelowThreshold = (lastGyroMagnitude < GYROSCOPE_THRESHOLD);
 
         if (gyroBelowThreshold) {
             if (sensorsBelowThresholdStartTime == 0) {
                 sensorsBelowThresholdStartTime = System.currentTimeMillis();
-            } else if (System.currentTimeMillis() - sensorsBelowThresholdStartTime >= EXIT_DEBOUNCE_DURATION) {
-                // Before entering Idle State, check for UWB ranging condition
-                checkForUwbRangingCondition();
+            }
+            else {
+                long stableDuration = System.currentTimeMillis() - sensorsBelowThresholdStartTime;
+                if (stableDuration >= EXIT_DEBOUNCE_DURATION) {
+                    // Before going Idle, check if we should trigger UWB
+                    checkForUwbRangingCondition();
 
-                // If still in MOVEMENT_DETECTION, transition to Idle
-                if (currentState == MovementState.MOVEMENT_DETECTION) {
-                    enterIdleState();
+                    // If still in MOVEMENT_DETECTION after that, go Idle
+                    if (currentState == MovementState.MOVEMENT_DETECTION) {
+                        enterIdleState("Movement ended. Returning to IDLE.");
+                    }
                 }
-                // If transitioned to UWB_RANGING, do not enter Idle State
             }
         } else {
-            sensorsBelowThresholdStartTime = 0;
+            sensorsBelowThresholdStartTime = 0; // reset if sensor rises above threshold again
         }
     }
     private void checkForUwbRangingCondition() {
-        if (magnetometerMagnitudes.isEmpty()) {
-            return;
-        }
+        // Only relevant if we're in MovementDetection
+        if (currentState != MovementState.MOVEMENT_DETECTION) return;
 
-        // Log original magnetometer magnitudes
-        //logReceivedData("Magnetometer Magnitudes Before Filter: " + magnetometerMagnitudes.toString()+"\n");
+        if (accelerationSampleCount > 0) {
+            float averageMotion = totalAccelerationMagnitude / accelerationSampleCount;
 
-        // Apply a median filter or remove outliers
-        List<Float> filteredMagnitudes = filterMagnetometerData(magnetometerMagnitudes);
-
-        // Log filtered magnetometer magnitudes
-        //logReceivedData("Magnetometer Magnitudes After Filter: " + filteredMagnitudes.toString()+"\n");
-
-        if (filteredMagnitudes.isEmpty()) {
-            // No valid data after filtering
-            return;
-        }
-
-        // Calculate max and min of filtered data
-        float maxMagnitude = Collections.max(filteredMagnitudes);
-        float minMagnitude = Collections.min(filteredMagnitudes);
-        float magnitudeDifference = Math.abs(maxMagnitude - minMagnitude);
-
-        // Check if the magnitude difference exceeds the threshold
-        if (magnitudeDifference >= MAGNETOMETER_FLUCTUATION_THRESHOLD) {
-            // Log that the condition has been met
-            String data = String.format(
-                    "CONDITION_MET TIMESTAMP: %d, Ready to enter UWB Ranging State\n",
-                    System.currentTimeMillis()
+            // Debug info
+            String debugText = String.format(
+                    "AvgMotion=%.4f (Threshold=%.4f), Samples=%d",
+                    averageMotion, MOTION_THRESHOLD, accelerationSampleCount
             );
-            logIMUData(data);
+            updateReceiveText("checkForUwbRangingCondition: " + debugText);
 
-            // Transition to UWB Ranging State
-            enterUwbRangingState();
-        }
-    }
-    private List<Float> filterMagnetometerData(List<Float> data) {
-        // Calculate mean and standard deviation
-        double sum = 0.0;
-        for (float value : data) {
-            sum += value;
-        }
-        double mean = sum / data.size();
-
-        double varianceSum = 0.0;
-        for (float value : data) {
-            varianceSum += Math.pow(value - mean, 2);
-        }
-        double standardDeviation = Math.sqrt(varianceSum / data.size());
-
-        // Remove outliers beyond 2 standard deviations
-        List<Float> filteredData = new ArrayList<>();
-        for (float value : data) {
-            if (Math.abs(value - mean) <= 2 * standardDeviation) {
-                filteredData.add(value);
+            // Decide seat change vs. trivial movement
+            if (averageMotion > MOTION_THRESHOLD) {
+                // Trigger UWB Ranging
+                enterUwbRangingState("Significant motion detected: " + debugText);
+            } else {
+                // Minor motion, remain in same seat
+                // We do not transition states here; eventually exit to IDLE if stable
             }
+
+            // Reset accumulators
+            totalAccelerationMagnitude = 0f;
+            accelerationSampleCount = 0;
         }
-        return filteredData;
     }
 
-    private void enterMovementDetectionState() {
+
+    private void enterMovementDetectionState(String reason) {
         currentState = MovementState.MOVEMENT_DETECTION;
-        gyroThresholdStartTime = 0;
+        movementDetectionStartTime = System.currentTimeMillis();
         sensorsBelowThresholdStartTime = 0;
+        totalAccelerationMagnitude = 0f;
+        accelerationSampleCount = 0;
 
-        // Clear previous magnetometer data
-        magnetometerMagnitudes.clear();
-
-        // Unregister gyroscope at normal delay
+        // Unregister low-rate sensors
         sensorManager.unregisterListener(sensorEventListener, gyroscope);
+        sensorManager.unregisterListener(sensorEventListener, linearAccelerometer);
 
-        // Register sensors at game delay
+        // Register sensors at higher sampling rate
         sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
         sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
-        sensorManager.registerListener(sensorEventListener, magnetometer, SensorManager.SENSOR_DELAY_GAME);
 
-        // Log state transition
-        String data = String.format(
-                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: MOVEMENT_DETECTION\n",
-                System.currentTimeMillis()
-        );
+        // Log & UI
+        String data = String.format("STATE_TRANSITION: %d -> MOVEMENT_DETECTION (Reason: %s)\n",
+                System.currentTimeMillis(), reason);
         logIMUData(data);
-
-        // Update receiveText on the main thread
-        updateReceiveText("Entered Movement Detection State");
+        updateReceiveText("Entered MOVEMENT_DETECTION. " + reason);
     }
 
-    private void enterIdleState() {
+    private void enterIdleState(String reason) {
         currentState = MovementState.IDLE;
-        gyroThresholdStartTime = 0;
-        sensorsBelowThresholdStartTime = 0;
 
         // Unregister all sensors
         sensorManager.unregisterListener(sensorEventListener);
 
-        // Register gyroscope at normal delay
+        // Register sensors at normal (low-power) rate
         sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_NORMAL);
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_NORMAL);
 
-        // Clear magnetometer data
-        magnetometerMagnitudes.clear();
-
-        // Log state transition
-        String data = String.format(
-                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: IDLE\n",
-                System.currentTimeMillis()
-        );
+        // Log & UI
+        String data = String.format("STATE_TRANSITION: %d -> IDLE (Reason: %s)\n",
+                System.currentTimeMillis(), reason);
         logIMUData(data);
-
-        // Update receiveText on the main thread
-        updateReceiveText("Entered Idle State");
+        updateReceiveText("Entered IDLE. " + reason);
     }
-    private static final int LOGGING_DURATION_MS = 10_000; // 10 seconds
+
+    private void enterUwbRangingState(String reason) {
+        currentState = MovementState.UWB_RANGING;
+
+        // Unregister sensors (or keep them, depending on your design)
+        sensorManager.unregisterListener(sensorEventListener);
+
+        // Start or request UWB session
+        // startUwbRangingSession(); // Example call
+
+        // Schedule end of UWB after LOGGING_DURATION_MS
+        uwbHandler.postDelayed(stopUwbRunnable, LOGGING_DURATION_MS);
+
+        // Log & UI
+        String data = String.format("STATE_TRANSITION: %d -> UWB_RANGING (Reason: %s)\n",
+                System.currentTimeMillis(), reason);
+        logIMUData(data);
+        updateReceiveText("Entered UWB_RANGING. " + reason);
+        //send("initf 4 9600");
+    }
+
+    // Called when the UWB session ends (stopUwbRunnable)
+    private void enterIdleStateFromUwb() {
+        // stopUwbRangingSession(); // Example call
+        //send("stop");
+        enterIdleState("UWB session ended.");
+    }
+
+
 
     private Handler uwbHandler = new Handler(Looper.getMainLooper());
     private Runnable stopUwbRunnable = new Runnable() {
@@ -543,58 +558,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
     };
 
-    private void enterUwbRangingState() {
-        currentState = MovementState.UWB_RANGING;
-
-        // Unregister all sensors
-        sensorManager.unregisterListener(sensorEventListener);
-
-        // Log state transition
-        String data = String.format(
-                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: UWB_RANGING\n",
-                System.currentTimeMillis()
-        );
-        logIMUData(data);
-
-        // Update receiveText on the main thread
-        updateReceiveText("Entered UWB Ranging State");
-
-        // Send command to UWB board
-        send("initf 4 9600");
-
-        // Clear magnetometer data
-        magnetometerMagnitudes.clear();
-        uwbHandler.postDelayed(stopUwbRunnable, LOGGING_DURATION_MS);
-    }
-    private void enterIdleStateFromUwb() {
-        currentState = MovementState.IDLE;
-
-        // Unregister all sensors
-        sensorManager.unregisterListener(sensorEventListener);
-
-        // Register gyroscope at normal delay
-        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_NORMAL);
-
-        // Log state transition
-        String data = String.format(
-                "STATE_TRANSITION TIMESTAMP: %d, NEW_STATE: IDLE\n",
-                System.currentTimeMillis()
-        );
-        logIMUData(data);
-
-        // Update receiveText on the main thread
-        updateReceiveText("Entered Idle State from UWB Ranging");
-
-        // Send command "stop"
-        send("stop");
 
 
-        // Reset debounce timers
-        gyroThresholdStartTime = 0;
-        sensorsBelowThresholdStartTime = 0;
-
-        uwbHandler.removeCallbacks(stopUwbRunnable);
-    }
 
 
 
