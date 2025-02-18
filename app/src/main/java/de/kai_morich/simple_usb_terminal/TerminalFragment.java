@@ -116,6 +116,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Sensor linearAccelerometer;
     private Sensor gyroscope;
     private Sensor magnetometer;
+    private Sensor rotationVectorSensor;
+
     private StringBuilder dataBuffer = new StringBuilder();
     private BlockingQueue<Map<String, Object>> cirDataQueue = new LinkedBlockingQueue<>();
     private RandomForestClassifier model;
@@ -130,11 +132,15 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     // -------------------- CONSTANTS & VARIABLES --------------------
     private static final float ACCEL_THRESHOLD = 1.2f;             // Threshold for pickup detection using accelerometer
-    private static final float MOTION_THRESHOLD = 2.5f;            // Threshold for seat-change detection in MovementDetection
+    private static final float ROTATION_THRESHOLD = 60f;          // Threshold for seat-change detection in MovementDetection
     private static final float GYROSCOPE_THRESHOLD = 1.2f; // Adjust as needed
     private static final long MOVEMENT_DETECTION_WINDOW_MS = 3000;  // 3 seconds (example)
     private static final int LOGGING_DURATION_MS = 10_000;          // 10 seconds in UWB state
 
+    // For rotation vector
+    private float[] lastRotationMatrix = new float[16];
+    private boolean firstRotationReading = true;
+    private float totalRotationDegrees = 0f;  // Summation of incremental rotation
 
     // Accumulator for MovementDetection
     private float totalAccelerationMagnitude = 0f;
@@ -337,8 +343,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         sensorManager = (SensorManager) getActivity().getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
             linearAccelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-            gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-            magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+
         } else {
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
@@ -356,8 +362,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             long timestamp = System.currentTimeMillis();
 
             switch (event.sensor.getType()) {
-                case Sensor.TYPE_GYROSCOPE:
-                    handleGyroscopeData(event.values, timestamp);
+                case Sensor.TYPE_ROTATION_VECTOR:
+                    handleRotationVectorData(event.values, timestamp);
                     break;
 
                 case Sensor.TYPE_LINEAR_ACCELERATION:
@@ -390,9 +396,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 enterMovementDetectionState("Gyroscope triggered pickup.");
             }
         }
-        else if (currentState == MovementState.MOVEMENT_DETECTION) {
-            checkForExitCondition();
-        }
+//        else if (currentState == MovementState.MOVEMENT_DETECTION) {
+//            checkForExitCondition();
+//        }
     }
 
     // -------------------- ACCELEROMETER HANDLER --------------------
@@ -414,19 +420,43 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             if (accelMagnitude > ACCEL_THRESHOLD) {
                 enterMovementDetectionState("Accelerometer triggered pickup.");
             }
-        }
-        else if (currentState == MovementState.MOVEMENT_DETECTION) {
-            // Accumulate total motion in MovementDetection
+        }else if (currentState == MovementState.MOVEMENT_DETECTION) {
+            // If you still want to track acceleration for other logic, do so here
             totalAccelerationMagnitude += accelMagnitude;
             accelerationSampleCount++;
 
-            // Optional: if you want a fixed window for detection
+            // Optional fixed window check
             if ((System.currentTimeMillis() - movementDetectionStartTime) > MOVEMENT_DETECTION_WINDOW_MS) {
                 checkForUwbRangingCondition();
             }
         }
+
     }
 
+    private void handleRotationVectorData(float[] rotationValues, long timestamp) {
+        if (currentState == MovementState.MOVEMENT_DETECTION) {
+            // Convert rotation vector to a rotation matrix
+            float[] currentMatrix = new float[16];
+            SensorManager.getRotationMatrixFromVector(currentMatrix, rotationValues);
+
+            if (firstRotationReading) {
+                // Initialize lastRotationMatrix
+                System.arraycopy(currentMatrix, 0, lastRotationMatrix, 0, 16);
+                firstRotationReading = false;
+                return;
+            }
+
+            // Compute incremental rotation between lastMatrix and currentMatrix
+            float angleDeg = computeRotationDifferenceDegrees(lastRotationMatrix, currentMatrix);
+            totalRotationDegrees += angleDeg;
+
+            // Update lastRotationMatrix
+            System.arraycopy(currentMatrix, 0, lastRotationMatrix, 0, 16);
+
+            // Check if phone is stable (below some small rotation threshold)
+            checkForExitCondition();
+        }
+    }
     private void checkForExitCondition() {
         // We use the gyroscope to see if the phone is now stable (below threshold)
         boolean gyroBelowThreshold = (lastGyroMagnitude < GYROSCOPE_THRESHOLD);
@@ -455,45 +485,60 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // Only relevant if we're in MovementDetection
         if (currentState != MovementState.MOVEMENT_DETECTION) return;
 
-        if (accelerationSampleCount > 0) {
-            float averageMotion = totalAccelerationMagnitude / accelerationSampleCount;
+        String debugText = String.format(
+                "TotalRotation=%.2f deg (Threshold=%.2f)",
+                totalRotationDegrees, ROTATION_THRESHOLD
+        );
+        updateReceiveText("checkForUwbRangingCondition: " + debugText);
 
-            // Debug info
-            String debugText = String.format(
-                    "AvgMotion=%.4f (Threshold=%.4f), Samples=%d",
-                    averageMotion, MOTION_THRESHOLD, accelerationSampleCount
-            );
-            updateReceiveText("checkForUwbRangingCondition: " + debugText);
-
-            // Decide seat change vs. trivial movement
-            if (averageMotion > MOTION_THRESHOLD) {
-                // Trigger UWB Ranging
-                enterUwbRangingState("Significant motion detected: " + debugText);
-            } else {
-                // Minor motion, remain in same seat
-                // We do not transition states here; eventually exit to IDLE if stable
-            }
-
-            // Reset accumulators
-            totalAccelerationMagnitude = 0f;
-            accelerationSampleCount = 0;
+        if (totalRotationDegrees > ROTATION_THRESHOLD) {
+            // Trigger UWB Ranging
+            enterUwbRangingState("Significant rotation detected: " + debugText);
         }
+        // else: minor rotation => remain in same seat
+
+        // Reset accumulators
+        totalRotationDegrees = 0f;
+        firstRotationReading = true;
+        totalAccelerationMagnitude = 0f;
+        accelerationSampleCount = 0;
     }
 
+    private float computeRotationDifferenceDegrees(float[] R1, float[] R2) {
+        // Invert R1
+        float[] R1_inv = new float[16];
+        android.opengl.Matrix.invertM(R1_inv, 0, R1, 0);
+
+        // R_rel = R1_inv * R2
+        float[] R_rel = new float[16];
+        android.opengl.Matrix.multiplyMM(R_rel, 0, R1_inv, 0, R2, 0);
+
+        // angle = arccos((trace(R_rel) - 1)/2)
+        float trace = R_rel[0] + R_rel[5] + R_rel[10];
+        float cosTheta = (trace - 1.0f) / 2.0f;
+        cosTheta = Math.max(-1.0f, Math.min(1.0f, cosTheta));
+        float thetaRad = (float) Math.acos(cosTheta);
+        float thetaDeg = (float) Math.toDegrees(thetaRad);
+
+        return thetaDeg;
+    }
 
     private void enterMovementDetectionState(String reason) {
         currentState = MovementState.MOVEMENT_DETECTION;
         movementDetectionStartTime = System.currentTimeMillis();
         sensorsBelowThresholdStartTime = 0;
+
+        // Reset accumulators
+        totalRotationDegrees = 0f;
+        firstRotationReading = true;
         totalAccelerationMagnitude = 0f;
         accelerationSampleCount = 0;
 
         // Unregister low-rate sensors
-        sensorManager.unregisterListener(sensorEventListener, gyroscope);
-        sensorManager.unregisterListener(sensorEventListener, linearAccelerometer);
+        sensorManager.unregisterListener(sensorEventListener);
 
-        // Register sensors at higher sampling rate
-        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
+        // Register rotation vector + accelerometer at higher sampling
+        sensorManager.registerListener(sensorEventListener, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME);
         sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 
         // Log & UI
@@ -510,10 +555,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         sensorManager.unregisterListener(sensorEventListener);
 
         // Register sensors at normal (low-power) rate
-        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_NORMAL);
+        sensorManager.registerListener(sensorEventListener, rotationVectorSensor, SensorManager.SENSOR_DELAY_NORMAL);
         sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_NORMAL);
 
-        // Log & UI
         String data = String.format("STATE_TRANSITION: %d -> IDLE (Reason: %s)\n",
                 System.currentTimeMillis(), reason);
         logIMUData(data);
