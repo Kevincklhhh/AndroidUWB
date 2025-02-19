@@ -100,6 +100,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Sensor linearAccelerometer;
     private Sensor gyroscope;
     private Sensor magnetometer;
+    private Sensor rotationVectorSensor;
     private SensorEventListener sensorEventListener;
 
 
@@ -186,6 +187,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             if (magnetometer != null) { // Add this block
                 sensorManager.registerListener(sensorEventListener, magnetometer, sensorDelay);
             }
+            if (rotationVectorSensor!= null){
+                sensorManager.registerListener(sensorEventListener, rotationVectorSensor, sensorDelay);
+            }
         }
         if(connected == Connected.True)
             controlLines.start();
@@ -244,6 +248,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             linearAccelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
             gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
             magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         } else {
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
@@ -260,6 +265,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             @Override
             public void onSensorChanged(SensorEvent event) {
                 long timestamp = System.currentTimeMillis(); // Use System.nanoTime() if higher precision is needed
+
                 if (event.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
                     float x = event.values[0];
                     float y = event.values[1];
@@ -268,6 +274,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     String logEntry = "ACCELEROMETER TIMESTAMP: " + timestamp +
                             ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
                     logIMUData(logEntry);
+
                 } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
                     float x = event.values[0];
                     float y = event.values[1];
@@ -276,18 +283,38 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     String logEntry = "GYROSCOPE TIMESTAMP: " + timestamp +
                             ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
                     logIMUData(logEntry);
-                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) { // Add this block
+
+                } else if (event.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
                     // Handle magnetometer data
                     float x = event.values[0];
                     float y = event.values[1];
                     float z = event.values[2];
 
-                    // Log magnetometer data
                     String logEntry = "MAGNETOMETER TIMESTAMP: " + timestamp +
                             ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
                     logIMUData(logEntry);
+
+                } else if (event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+                    // Handle rotation vector sensor data
+                    float x = event.values[0];
+                    float y = event.values[1];
+                    float z = event.values[2];
+                    String logEntry;
+
+                    // Check if a scalar component is provided (some devices return 4 values)
+                    if (event.values.length > 3) {
+                        float scalar = event.values[3];
+                        logEntry = "ROTATION VECTOR TIMESTAMP: " + timestamp +
+                                ", X: " + x + ", Y: " + y + ", Z: " + z +
+                                ", Scalar: " + scalar + "\n";
+                    } else {
+                        logEntry = "ROTATION VECTOR TIMESTAMP: " + timestamp +
+                                ", X: " + x + ", Y: " + y + ", Z: " + z + "\n";
+                    }
+                    logIMUData(logEntry);
                 }
             }
+
 
             @Override
             public void onAccuracyChanged(Sensor sensor, int accuracy) {
