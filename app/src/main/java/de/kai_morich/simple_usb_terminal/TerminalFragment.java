@@ -115,8 +115,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     private Sensor linearAccelerometer;
     private Sensor gyroscope;
-    private Sensor magnetometer;
-    private Sensor rotationVectorSensor;
 
     private StringBuilder dataBuffer = new StringBuilder();
     private BlockingQueue<Map<String, Object>> cirDataQueue = new LinkedBlockingQueue<>();
@@ -126,41 +124,23 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private int CIRlength = 70;
     // Thresholds
 
-    private static final float MAGNETOMETER_THRESHOLD = 30.0f; // Adjust as needed
-    private float lastGyroMagnitude = 0.0f;
-    private float lastAccelMagnitude = 0f;
-
-    // -------------------- CONSTANTS & VARIABLES --------------------
-    private static final float ACCEL_THRESHOLD = 1.2f;             // Threshold for pickup detection using accelerometer
-    private static final float ROTATION_THRESHOLD = 60f;          // Threshold for seat-change detection in MovementDetection
-    private static final float GYROSCOPE_THRESHOLD = 1.2f; // Adjust as needed
-    private static final long MOVEMENT_DETECTION_WINDOW_MS = 3000;  // 3 seconds (example)
-    private static final int LOGGING_DURATION_MS = 10_000;          // 10 seconds in UWB state
-
-    // For rotation vector
-    private float[] lastRotationMatrix = new float[16];
-    private boolean firstRotationReading = true;
-    private float totalRotationDegrees = 0f;  // Summation of incremental rotation
-
-    // Accumulator for MovementDetection
-    private float totalAccelerationMagnitude = 0f;
-    private int accelerationSampleCount = 0;
-
-    // Timestamps
-    private long sensorsBelowThresholdStartTime = 0;
-    private long movementDetectionStartTime = 0;
-    private long gyroThresholdStartTime = 0;
-
-    // Debounce durations (in milliseconds)
-    private static final long ENTER_DEBOUNCE_DURATION = 300;
-    private static final long EXIT_DEBOUNCE_DURATION = 1000;
-
-    // Timestamps
 
 
-    private List<Float> magnetometerMagnitudes = new ArrayList<>();
-    private static final float MAGNETOMETER_FLUCTUATION_THRESHOLD = 5.0f; // in µT
-    private float lastMagnetometerMagnitude = 0.0f;
+
+    private List<Float> gyroWindow = new ArrayList<>();
+    private List<Float> accelWindow = new ArrayList<>();
+    private long windowStartTime = 0;
+    private static final int WINDOW_SIZE_MS = 1000;  // 1 second window
+    private static final int SAMPLE_INTERVAL_MS = 200; // 5 Hz sampling (~0.2 sec/sample)
+    private static final float GYROSCOPE_THRESHOLD = 1.5f;  // Example threshold for gyro magnitude
+    private static final float ACCEL_THRESHOLD = 1.7f;      // Example threshold for accel magnitude
+
+    // Flag and handler for UWB ranging state
+    private boolean isUwbActive = false;
+    private Handler uwbHandler = new Handler();
+    private static final int UWB_DURATION_MS = 5000;
+
+
 
     // List to store features of collected CIRs
     private List<Map<String, Double>> collectedFeatures = new ArrayList<>();
@@ -175,11 +155,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Map<String, Double> varianceThresholds = new HashMap<>();
 
 
-    private enum MovementState {
-        IDLE,
-        UWB_RANGING, MOVEMENT_DETECTION
-    }
-    private MovementState currentState = MovementState.IDLE;
     public TerminalFragment() {
         mainLooper = new Handler(Looper.getMainLooper());
         broadcastReceiver = new BroadcastReceiver() {
@@ -193,9 +168,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         };
     }
 
-    /*
-     * Lifecycle
-     */
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -282,13 +254,10 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             initialStart = false;
             getActivity().runOnUiThread(this::connect);
         }
-        if (currentState == MovementState.IDLE) {
-            sensorManager.registerListener(sensorEventListener, gyroscope, 100000);
-        } else if (currentState == MovementState.MOVEMENT_DETECTION) {
-            sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
-            sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
-            sensorManager.registerListener(sensorEventListener, magnetometer, SensorManager.SENSOR_DELAY_GAME);
-        }
+
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_UI);
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_UI);
+
         if(connected == Connected.True)
             controlLines.start();
     }
@@ -342,265 +311,135 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
         sensorManager = (SensorManager) getActivity().getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager != null) {
+            // We only need the linear accelerometer and gyroscope for this task.
             linearAccelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-            rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-
+            gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         } else {
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
+        // Register sensors at UI (5Hz) rate.
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_UI);
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_UI);
 
-        enterIdleState("Initialize");
-        // Initialize and register the sensor event listener
-        //initSensorEventListener();
-
-        // Clear the IMU log file when the view is created
         return view;
     }
+    private Runnable stopUwbRunnable = new Runnable() {
+        @Override
+        public void run() {
+            isUwbActive = false;
+            updateReceiveText("UWB ranging stopped; resuming IMU detection.");
+            // Optionally, re-register sensors if needed.
+        }
+    };
     private SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
             long timestamp = System.currentTimeMillis();
 
-            switch (event.sensor.getType()) {
-                case Sensor.TYPE_ROTATION_VECTOR:
-                    handleRotationVectorData(event.values, timestamp);
-                    break;
+            // If UWB ranging is active, pause window processing.
+            if (isUwbActive) {
+                // Optionally, you might want to ignore sensor events or clear window buffers.
+                return;
+            }
 
+            switch (event.sensor.getType()) {
                 case Sensor.TYPE_LINEAR_ACCELERATION:
                     handleAccelerometerData(event.values, timestamp);
+                    break;
+                case Sensor.TYPE_GYROSCOPE:
+                    handleGyroscopeData(event.values, timestamp);
                     break;
             }
         }
 
         @Override
         public void onAccuracyChanged(Sensor sensor, int accuracy) {
-            // Handle changes in sensor accuracy if needed
+            // Not used here
         }
     };
-    private void handleGyroscopeData(float[] values, long timestamp) {
-        float gyroMagnitude = (float) Math.sqrt(
-                values[0]*values[0] + values[1]*values[1] + values[2]*values[2]
-        );
-        lastGyroMagnitude = gyroMagnitude;
 
-        // Logging
-        String data = String.format(
-                "GYROSCOPE TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
-                timestamp, values[0], values[1], values[2], gyroMagnitude
-        );
+    private void handleGyroscopeData(float[] values, long timestamp) {
+        float gyroMag = (float) Math.sqrt(values[0]*values[0] + values[1]*values[1] + values[2]*values[2]);
+
+        // Log gyroscope reading.
+        String data = String.format("GYROSCOPE TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
+                timestamp, values[0], values[1], values[2], gyroMag);
         logIMUData(data);
 
-        if (currentState == MovementState.IDLE) {
-            // Pickup detection if gyroMagnitude exceeds threshold
-            if (gyroMagnitude > GYROSCOPE_THRESHOLD) {
-                enterMovementDetectionState("Gyroscope triggered pickup.");
-            }
-        }
-//        else if (currentState == MovementState.MOVEMENT_DETECTION) {
-//            checkForExitCondition();
-//        }
+        // Add current sample to the gyroscope window.
+        gyroWindow.add(gyroMag);
     }
 
     // -------------------- ACCELEROMETER HANDLER --------------------
     private void handleAccelerometerData(float[] values, long timestamp) {
-        float accelMagnitude = (float) Math.sqrt(
-                values[0]*values[0] + values[1]*values[1] + values[2]*values[2]
-        );
-        lastAccelMagnitude = accelMagnitude;
+        float accelMag = (float) Math.sqrt(values[0]*values[0] + values[1]*values[1] + values[2]*values[2]);
 
-        // Logging
-        String data = String.format(
-                "ACCELEROMETER TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
-                timestamp, values[0], values[1], values[2], accelMagnitude
-        );
+        // Log the accelerometer reading.
+        String data = String.format("ACCELEROMETER TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
+                timestamp, values[0], values[1], values[2], accelMag);
         logIMUData(data);
 
-        if (currentState == MovementState.IDLE) {
-            // Pickup detection if accelMagnitude exceeds threshold
-            if (accelMagnitude > ACCEL_THRESHOLD) {
-                enterMovementDetectionState("Accelerometer triggered pickup.");
-            }
-        }else if (currentState == MovementState.MOVEMENT_DETECTION) {
-            // If you still want to track acceleration for other logic, do so here
-            totalAccelerationMagnitude += accelMagnitude;
-            accelerationSampleCount++;
+        // Initialize window start time if window is empty.
+        if (gyroWindow.isEmpty() && accelWindow.isEmpty()) {
+            windowStartTime = timestamp;
+        }
 
-            // Optional fixed window check
-            if ((System.currentTimeMillis() - movementDetectionStartTime) > MOVEMENT_DETECTION_WINDOW_MS) {
-                checkForUwbRangingCondition();
+        // Add current sample to the accelerometer window.
+        accelWindow.add(accelMag);
+
+        // Check if window duration is reached.
+        if (timestamp - windowStartTime >= WINDOW_SIZE_MS) {
+            processWindow();
+            // Clear buffers and update window start time.
+            gyroWindow.clear();
+            accelWindow.clear();
+            windowStartTime = timestamp;
+        }
+    }
+
+    private void processWindow() {
+        // If UWB ranging is active, skip processing.
+        if (isUwbActive) {
+            return;
+        }
+
+        // Compute maximum gyroscope magnitude in the window.
+        float maxGyro = 0f;
+        for (float g : gyroWindow) {
+            if (g > maxGyro) {
+                maxGyro = g;
             }
         }
 
-    }
+        // Compute average accelerometer magnitude in the window.
+        float sumAccel = 0f;
+        for (float a : accelWindow) {
+            sumAccel += a;
+        }
+        float avgAccel = sumAccel / accelWindow.size();
 
-    private void handleRotationVectorData(float[] rotationValues, long timestamp) {
-        if (currentState == MovementState.MOVEMENT_DETECTION) {
-            // Convert rotation vector to a rotation matrix
-            float[] currentMatrix = new float[16];
-            SensorManager.getRotationMatrixFromVector(currentMatrix, rotationValues);
+        // Log the computed features for debugging.
+        String debugMsg = String.format("Window [%d - %d]: Max Gyro = %.4f, Avg Accel = %.4f",
+                windowStartTime, windowStartTime + WINDOW_SIZE_MS, maxGyro, avgAccel);
+        logIMUData(debugMsg + "\n");
 
-            if (firstRotationReading) {
-                // Initialize lastRotationMatrix
-                System.arraycopy(currentMatrix, 0, lastRotationMatrix, 0, 16);
-                firstRotationReading = false;
-                return;
-            }
-
-            // Compute incremental rotation between lastMatrix and currentMatrix
-            float angleDeg = computeRotationDifferenceDegrees(lastRotationMatrix, currentMatrix);
-            totalRotationDegrees += angleDeg;
-
-            // Update lastRotationMatrix
-            System.arraycopy(currentMatrix, 0, lastRotationMatrix, 0, 16);
-
-            // Check if phone is stable (below some small rotation threshold)
-            checkForExitCondition();
+        // If both sensor features exceed thresholds, trigger UWB ranging.
+        if (maxGyro > GYROSCOPE_THRESHOLD && avgAccel > ACCEL_THRESHOLD) {
+            updateReceiveText(debugMsg);
+            activateUwbRanging();
         }
     }
-    private void checkForExitCondition() {
-        // We use the gyroscope to see if the phone is now stable (below threshold)
-        boolean gyroBelowThreshold = (lastGyroMagnitude < GYROSCOPE_THRESHOLD);
 
-        if (gyroBelowThreshold) {
-            if (sensorsBelowThresholdStartTime == 0) {
-                sensorsBelowThresholdStartTime = System.currentTimeMillis();
-            }
-            else {
-                long stableDuration = System.currentTimeMillis() - sensorsBelowThresholdStartTime;
-                if (stableDuration >= EXIT_DEBOUNCE_DURATION) {
-                    // Before going Idle, check if we should trigger UWB
-                    checkForUwbRangingCondition();
+    private void activateUwbRanging() {
+        // Set flag to pause further IMU processing.
+        isUwbActive = true;
+        updateReceiveText("UWB ranging activated.");
+        logIMUData("UWB ranging activated.\n");
 
-                    // If still in MOVEMENT_DETECTION after that, go Idle
-                    if (currentState == MovementState.MOVEMENT_DETECTION) {
-                        enterIdleState("Movement ended. Returning to IDLE.");
-                    }
-                }
-            }
-        } else {
-            sensorsBelowThresholdStartTime = 0; // reset if sensor rises above threshold again
-        }
+        // Here, insert your code to actually start UWB ranging.
+        // For now, we simulate by scheduling a stop after 5 seconds.
+        uwbHandler.postDelayed(stopUwbRunnable, UWB_DURATION_MS);
     }
-    private void checkForUwbRangingCondition() {
-        // Only relevant if we're in MovementDetection
-        if (currentState != MovementState.MOVEMENT_DETECTION) return;
-
-        String debugText = String.format(
-                "TotalRotation=%.2f deg (Threshold=%.2f)",
-                totalRotationDegrees, ROTATION_THRESHOLD
-        );
-        updateReceiveText("checkForUwbRangingCondition: " + debugText);
-
-        if (totalRotationDegrees > ROTATION_THRESHOLD) {
-            // Trigger UWB Ranging
-            enterUwbRangingState("Significant rotation detected: " + debugText);
-        }
-        // else: minor rotation => remain in same seat
-
-        // Reset accumulators
-        totalRotationDegrees = 0f;
-        firstRotationReading = true;
-        totalAccelerationMagnitude = 0f;
-        accelerationSampleCount = 0;
-    }
-
-    private float computeRotationDifferenceDegrees(float[] R1, float[] R2) {
-        // Invert R1
-        float[] R1_inv = new float[16];
-        android.opengl.Matrix.invertM(R1_inv, 0, R1, 0);
-
-        // R_rel = R1_inv * R2
-        float[] R_rel = new float[16];
-        android.opengl.Matrix.multiplyMM(R_rel, 0, R1_inv, 0, R2, 0);
-
-        // angle = arccos((trace(R_rel) - 1)/2)
-        float trace = R_rel[0] + R_rel[5] + R_rel[10];
-        float cosTheta = (trace - 1.0f) / 2.0f;
-        cosTheta = Math.max(-1.0f, Math.min(1.0f, cosTheta));
-        float thetaRad = (float) Math.acos(cosTheta);
-        float thetaDeg = (float) Math.toDegrees(thetaRad);
-
-        return thetaDeg;
-    }
-
-    private void enterMovementDetectionState(String reason) {
-        currentState = MovementState.MOVEMENT_DETECTION;
-        movementDetectionStartTime = System.currentTimeMillis();
-        sensorsBelowThresholdStartTime = 0;
-
-        // Reset accumulators
-        totalRotationDegrees = 0f;
-        firstRotationReading = true;
-        totalAccelerationMagnitude = 0f;
-        accelerationSampleCount = 0;
-
-        // Unregister low-rate sensors
-        sensorManager.unregisterListener(sensorEventListener);
-
-        // Register rotation vector + accelerometer at higher sampling
-        sensorManager.registerListener(sensorEventListener, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME);
-        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
-
-        // Log & UI
-        String data = String.format("STATE_TRANSITION: %d -> MOVEMENT_DETECTION (Reason: %s)\n",
-                System.currentTimeMillis(), reason);
-        logIMUData(data);
-        updateReceiveText("Entered MOVEMENT_DETECTION. " + reason);
-    }
-
-    private void enterIdleState(String reason) {
-        currentState = MovementState.IDLE;
-
-        // Unregister all sensors
-        sensorManager.unregisterListener(sensorEventListener);
-
-        // Register sensors at normal (low-power) rate
-        sensorManager.registerListener(sensorEventListener, rotationVectorSensor, SensorManager.SENSOR_DELAY_NORMAL);
-        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_NORMAL);
-
-        String data = String.format("STATE_TRANSITION: %d -> IDLE (Reason: %s)\n",
-                System.currentTimeMillis(), reason);
-        logIMUData(data);
-        updateReceiveText("Entered IDLE. " + reason);
-    }
-
-    private void enterUwbRangingState(String reason) {
-        currentState = MovementState.UWB_RANGING;
-
-        // Unregister sensors (or keep them, depending on your design)
-        sensorManager.unregisterListener(sensorEventListener);
-
-        // Start or request UWB session
-        // startUwbRangingSession(); // Example call
-
-        // Schedule end of UWB after LOGGING_DURATION_MS
-        uwbHandler.postDelayed(stopUwbRunnable, LOGGING_DURATION_MS);
-
-        // Log & UI
-        String data = String.format("STATE_TRANSITION: %d -> UWB_RANGING (Reason: %s)\n",
-                System.currentTimeMillis(), reason);
-        logIMUData(data);
-        updateReceiveText("Entered UWB_RANGING. " + reason);
-        //send("initf 4 9600");
-    }
-
-    // Called when the UWB session ends (stopUwbRunnable)
-    private void enterIdleStateFromUwb() {
-        // stopUwbRangingSession(); // Example call
-        //send("stop");
-        enterIdleState("UWB session ended.");
-    }
-
-
-
-    private Handler uwbHandler = new Handler(Looper.getMainLooper());
-    private Runnable stopUwbRunnable = new Runnable() {
-        @Override
-        public void run() {
-            // After 10 seconds, transition to Idle state
-            enterIdleStateFromUwb();
-        }
-    };
 
 
 
@@ -928,7 +767,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void processCompleteMessage(String message) {
-        //logReceivedData("CIR data raw msg: " + message + "\n");
+        logReceivedData("CIR data raw msg: " + message + "\n");
 //        // Initialize variables
 //        String fpIndex = null;
 //        List<Integer> cirRealValues = new ArrayList<>();
@@ -1014,16 +853,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 }
             }
         });
-    }
-    private void initializeVarianceThresholds() {
-        varianceThresholds.put("Num_Peaks", 0.5);
-        varianceThresholds.put("Pmax", 50.0);
-        varianceThresholds.put("Tmax", 10.0);
-        varianceThresholds.put("P_pos_ratio_1", 0.2);
-        varianceThresholds.put("P_power_ratio_1", 0.2);
-        varianceThresholds.put("T_pos_distance_1", 5.0);
-        varianceThresholds.put("T_power_distance_1", 5.0);
-        // Add thresholds for other features as needed
     }
 
     private void processCirDataAsync(Map<String, Object> cirData) {
@@ -1308,7 +1137,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
     private List<Integer> detectPeaks(double[] data) {
         double slopeThreshold = 1.0;
-        double amplitudeThreshold = 290.0;
+        double amplitudeThreshold = 220.0;
         int minDistance = 100;
 
         double[] firstDerivative = computeGradient(data);
