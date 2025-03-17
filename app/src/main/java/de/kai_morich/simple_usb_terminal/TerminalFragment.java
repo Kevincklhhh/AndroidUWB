@@ -50,9 +50,12 @@ import com.hoho.android.usbserial.driver.UsbSerialProber;
 import com.hoho.android.usbserial.util.XonXoffFilter;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -135,6 +138,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private static final float GYROSCOPE_THRESHOLD = 1.5f;  // Example threshold for gyro magnitude
     private static final float ACCEL_THRESHOLD = 1.7f;      // Example threshold for accel magnitude
 
+    private static final float ACCEL_DURATION_THRESHOLD = 0.6f;  // 30% of samples in window must exceed ACCEL_MIN_VALUE
+    private static final float ACCEL_MIN_VALUE = 2.0f;
     // Flag and handler for UWB ranging state
     private boolean isUwbActive = false;
     private Handler uwbHandler = new Handler();
@@ -398,12 +403,11 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void processWindow() {
-        // If UWB ranging is active, skip processing.
         if (isUwbActive) {
             return;
         }
 
-        // Compute maximum gyroscope magnitude in the window.
+        // 1) Compute maximum gyroscope magnitude
         float maxGyro = 0f;
         for (float g : gyroWindow) {
             if (g > maxGyro) {
@@ -411,21 +415,39 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             }
         }
 
-        // Compute average accelerometer magnitude in the window.
+        // 2) Compute average accelerometer magnitude
         float sumAccel = 0f;
         for (float a : accelWindow) {
             sumAccel += a;
         }
-        float avgAccel = sumAccel / accelWindow.size();
+        float avgAccel = (accelWindow.isEmpty()) ? 0 : sumAccel / accelWindow.size();
 
-        // Log the computed features for debugging.
-        String debugMsg = String.format("Window [%d - %d]: Max Gyro = %.4f, Avg Accel = %.4f",
-                windowStartTime, windowStartTime + WINDOW_SIZE_MS, maxGyro, avgAccel);
+        // 3) Compute proportion of samples above ACCEL_MIN_VALUE
+        int countAbove = 0;
+        for (float a : accelWindow) {
+            if (a > ACCEL_MIN_VALUE) {
+                countAbove++;
+            }
+        }
+        float proportionAbove = 0f;
+        if (!accelWindow.isEmpty()) {
+            proportionAbove = (float) countAbove / (float) accelWindow.size();
+        }
+
+        // Log the computed features for debugging
+        String debugMsg = String.format(
+                "Window [%d - %d]: Max Gyro = %.4f, Avg Accel = %.4f, PropAbove(%.1f) = %.3f",
+                windowStartTime, windowStartTime + WINDOW_SIZE_MS, maxGyro, avgAccel, ACCEL_MIN_VALUE, proportionAbove
+        );
         logIMUData(debugMsg + "\n");
 
-        // If both sensor features exceed thresholds, trigger UWB ranging.
-        if (maxGyro > GYROSCOPE_THRESHOLD && avgAccel > ACCEL_THRESHOLD) {
-            updateReceiveText(debugMsg);
+        // 4) Check thresholds (original + new proportion threshold)
+        if (maxGyro > GYROSCOPE_THRESHOLD
+                && avgAccel > ACCEL_THRESHOLD
+                && proportionAbove > ACCEL_DURATION_THRESHOLD) {
+
+            // We interpret this as a cross-seat movement
+            updateReceiveText("Cross-seat movement detected => " + debugMsg);
             activateUwbRanging();
         }
     }
@@ -1385,6 +1407,10 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         File filePath1 = new File(getActivity().getFilesDir(), fileName1);
         File filePath2 = new File(getActivity().getFilesDir(), fileName2);
 
+        // Write internal log files to external storage
+        writeLogFileToExternalStorage(fileName1);
+        writeLogFileToExternalStorage(fileName2);
+
         ArrayList<Uri> filesToShare = new ArrayList<>();
 
         if (filePath1.exists()) {
@@ -1408,12 +1434,55 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             intent.setType("text/plain");
             intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, filesToShare);
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
             startActivity(Intent.createChooser(intent, "Share log files via"));
         } else {
             Toast.makeText(getActivity(), "No log files to share", Toast.LENGTH_SHORT).show();
         }
     }
+
+    /**
+     * Copies the given log file from internal storage to the external Documents directory.
+     * If a file with the same name already exists, a timestamp is appended to the filename.
+     */
+    private void writeLogFileToExternalStorage(String fileName) {
+        File internalFile = new File(getActivity().getFilesDir(), fileName);
+        if (!internalFile.exists()) {
+            Toast.makeText(getActivity(), "File " + fileName + " not found in internal storage", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Get the external Documents directory for the app.
+        File externalDir = getActivity().getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+        if (externalDir != null && !externalDir.exists()) {
+            externalDir.mkdirs();
+        }
+
+        // Create an external file with the same name.
+        File externalFile = new File(externalDir, fileName);
+        // If the file already exists, append a timestamp to make it unique.
+        if (externalFile.exists()) {
+            String newName = fileName.replace(".", "_" + System.currentTimeMillis() + ".");
+            externalFile = new File(externalDir, newName);
+        }
+
+        try {
+            InputStream in = new FileInputStream(internalFile);
+            OutputStream out = new FileOutputStream(externalFile);
+            byte[] buffer = new byte[1024];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            in.close();
+            out.flush();
+            out.close();
+            Toast.makeText(getActivity(), "Log file written to external storage: " + externalFile.getAbsolutePath(), Toast.LENGTH_SHORT).show();
+        } catch (IOException e) {
+            e.printStackTrace();
+            Toast.makeText(getActivity(), "Error writing log file to external storage", Toast.LENGTH_SHORT).show();
+        }
+    }
+
 
     private void clearLogFile() {
         String fileName = "received_data_log.txt";
