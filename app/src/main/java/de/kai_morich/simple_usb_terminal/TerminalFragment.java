@@ -327,14 +327,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
         return view;
     }
-    private Runnable stopUwbRunnable = new Runnable() {
-        @Override
-        public void run() {
-            isUwbActive = false;
-            updateReceiveText("UWB ranging stopped; resuming IMU detection.");
-            // Optionally, re-register sensors if needed.
-        }
-    };
+
     private SensorEventListener sensorEventListener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
@@ -454,14 +447,23 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private void activateUwbRanging() {
         // Set flag to pause further IMU processing.
         isUwbActive = true;
-        updateReceiveText("UWB ranging activated.");
-        logIMUData("UWB ranging activated.\n");
-
+//        updateReceiveText("UWB ranging activated.");
+//        logIMUData("UWB ranging activated.\n");
+        send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
         uwbHandler.postDelayed(stopUwbRunnable, UWB_DURATION_MS);
     }
 
+    private Runnable stopUwbRunnable = new Runnable() {
+        @Override
+        public void run() {
+            isUwbActive = false;
+            updateReceiveText("UWB ranging stopped; resuming IMU detection.");
+            send("stop");
+            // Optionally, re-register sensors if needed.
+        }
+    };
 
 
 
@@ -653,8 +655,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             long sendTimestamp = System.currentTimeMillis(); // You can use System.nanoTime() for higher resolution if needed
 
             // Log the timestamp and the sent command to the log file
-            String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
-            logReceivedData(logEntry);
+//            String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
+//            logReceivedData(logEntry);
             SpannableStringBuilder spn = new SpannableStringBuilder(msg + '\n');
             spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             receiveText.append(spn);
@@ -740,15 +742,15 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
                 logReceivedData(msg);
-                String receivedString = new String(data, StandardCharsets.UTF_8);
-                synchronized (dataBuffer) {
-                    dataBuffer.append(receivedString);
-                }
-                if (receivedString.contains("!")) {
-                    // Process the data in the buffer
-                    //enterIdleStateFromUwb();
-                    processDataBuffer();
-                }
+//                String receivedString = new String(data, StandardCharsets.UTF_8);
+//                synchronized (dataBuffer) {
+//                    dataBuffer.append(receivedString);
+//                }
+//                if (receivedString.contains("!")) {
+//                    // Process the data in the buffer
+//                    //enterIdleStateFromUwb();
+//                    processDataBuffer();
+//                }
 
             }
             String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
