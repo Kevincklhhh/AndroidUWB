@@ -64,11 +64,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -134,12 +133,12 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private List<Float> accelWindow = new ArrayList<>();
     private long windowStartTime = 0;
     private static final int WINDOW_SIZE_MS = 1000;  // 1 second window
-    private static final int SAMPLE_INTERVAL_MS = 200; // 5 Hz sampling (~0.2 sec/sample)
-    private static final float GYROSCOPE_THRESHOLD = 1.5f;  // Example threshold for gyro magnitude
-    private static final float ACCEL_THRESHOLD = 1.7f;      // Example threshold for accel magnitude
+
+    private static final float GYROSCOPE_THRESHOLD = 1.4f;  // Example threshold for gyro magnitude
+    private static final float ACCEL_THRESHOLD = 1.4f;      // Example threshold for accel magnitude
 
     private static final float ACCEL_DURATION_THRESHOLD = 0.6f;  // 30% of samples in window must exceed ACCEL_MIN_VALUE
-    private static final float ACCEL_MIN_VALUE = 2.0f;
+    private static final float ACCEL_MIN_VALUE = 1.4f;
     // Flag and handler for UWB ranging state
     private boolean isUwbActive = false;
     private Handler uwbHandler = new Handler();
@@ -790,52 +789,52 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     private void processCompleteMessage(String message) {
         logReceivedData("CIR data raw msg: " + message + "\n");
-//        // Initialize variables
-//        String fpIndex = null;
-//        List<Integer> cirRealValues = new ArrayList<>();
-//        List<Integer> cirImagValues = new ArrayList<>();
-//        int dCm = -1;
-//
-//        // Patterns
-//        Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
-//        Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
-//        Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
-//        Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
-//
-//        // Find FPindex
-//        Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
-//        if (fpIndexMatcher.find()) {
-//            fpIndex = fpIndexMatcher.group(1);
-//        }
-//
-//        // Find CIR_real_values
-//        Matcher cirRealValuesMatcher = cirRealValuesPattern.matcher(message);
-//        if (cirRealValuesMatcher.find()) {
-//            String numbersString = cirRealValuesMatcher.group(1);
-//            cirRealValues = extractNumbers(numbersString);
-//        }
-//
-//        // Find CIR_imag_values
-//        Matcher cirImagValuesMatcher = cirImagValuesPattern.matcher(message);
-//        if (cirImagValuesMatcher.find()) {
-//            String numbersString = cirImagValuesMatcher.group(1);
-//            cirImagValues = extractNumbers(numbersString);
-//        }
-//
-//        // Find D_cm
-//        Matcher dCmMatcher = dCmPattern.matcher(message);
-//        if (dCmMatcher.find()) {
-//            dCm = Integer.parseInt(dCmMatcher.group(1));
-//        }
-//
-//        // Now, process the CIR data
-//        if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
-//            // Process the CIR block
-//            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
-//        } else {
-//            // Missing data, handle error
-//            Log.e("CIRParser", "Incomplete CIR data");
-//        }
+        // Initialize variables
+        String fpIndex = null;
+        List<Integer> cirRealValues = new ArrayList<>();
+        List<Integer> cirImagValues = new ArrayList<>();
+        int dCm = -1;
+
+        // Patterns
+        Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
+        Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
+        Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
+        Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
+
+        // Find FPindex
+        Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
+        if (fpIndexMatcher.find()) {
+            fpIndex = fpIndexMatcher.group(1);
+        }
+
+        // Find CIR_real_values
+        Matcher cirRealValuesMatcher = cirRealValuesPattern.matcher(message);
+        if (cirRealValuesMatcher.find()) {
+            String numbersString = cirRealValuesMatcher.group(1);
+            cirRealValues = extractNumbers(numbersString);
+        }
+
+        // Find CIR_imag_values
+        Matcher cirImagValuesMatcher = cirImagValuesPattern.matcher(message);
+        if (cirImagValuesMatcher.find()) {
+            String numbersString = cirImagValuesMatcher.group(1);
+            cirImagValues = extractNumbers(numbersString);
+        }
+
+        // Find D_cm
+        Matcher dCmMatcher = dCmPattern.matcher(message);
+        if (dCmMatcher.find()) {
+            dCm = Integer.parseInt(dCmMatcher.group(1));
+        }
+
+        // Now, process the CIR data
+        if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
+            // Process the CIR block
+            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
+        } else {
+            // Missing data, handle error
+            Log.e("CIRParser", "Incomplete CIR data");
+        }
     }
     private List<Integer> extractNumbers(String s) {
         List<Integer> numbers = new ArrayList<>();
@@ -877,113 +876,128 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         });
     }
 
+    // Inside your real-time processing code, you'd do something like:
+    private UnboundedPeakTracker peakTracker = new UnboundedPeakTracker(
+            100,   // tolerance
+            5,    // maxUnmatchedFrames
+            true  // debug = true for verbose logs
+    );
     private void processCirDataAsync(Map<String, Object> cirData) {
+
+        // 1) Parse raw data from the Map
         String fpIndex = (String) cirData.get("fpIndex");
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
         List<Integer> cirImagValues = (List<Integer>) cirData.get("cirImagValues");
-        int dCm = (int) cirData.get("dCm");
+        int dCm = (int) cirData.get("dCm");  // optional distance in cm
 
-        // Convert FPindex from hex to fixed-point decimal
+        // 2) Convert FPindex from hex to fixed-point
         double firstPathIndex = hexToFixedPoint(fpIndex);
 
-        // Convert CIR values to arrays
+        // 3) Convert CIR values (real & imag) into arrays
         double[] cirRealArray = cirRealValues.stream().mapToDouble(Integer::doubleValue).toArray();
         double[] cirImagArray = cirImagValues.stream().mapToDouble(Integer::doubleValue).toArray();
 
-        // Compute CIR magnitude
+        // 4) Compute CIR magnitude
         double[] cirMagnitude = new double[cirRealArray.length];
         for (int i = 0; i < cirRealArray.length; i++) {
-            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
+            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i]
+                    + cirImagArray[i] * cirImagArray[i]);
         }
 
-        // Proceed with upsampling
+        // 5) Upsample the CIR
+        //    Assume CIRlength is the original length of cirMagnitude.
+        //    So if cirMagnitude.length == CIRlength, we do 64*CIRlength
         double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
 
-        // Align the upsampled CIR using the first path index
+        // 6) Align the upsampled CIR using the first path index
         double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
 
-        // Detect peaks in the alignedCIR
-        List<Integer> peakIndices = detectPeaks(alignedCIR);
+        // 7) Detect peaks (local maxima only, removing slope-based logic)
+        //    - amplitudeThreshold and minDistance are the main controls
+        double amplitudeThreshold = 220.0;
+        int minDistance = 100;
+        List<Integer> framePeaks = detectPeaksLocalMax(alignedCIR, amplitudeThreshold, minDistance, /*debug=*/true);
 
-        // Extract features from the aligned CIR and peaks
-        Map<String, Double> features = extractFeatures(alignedCIR, peakIndices);
+        // 8) Update our peak tracker to maintain continuity across frames
+        peakTracker.update(framePeaks, null);
 
-        // Store features
+        // 9) Retrieve the stable/tracked peaks and build features
+        List<Map<String, Object>> trackedPeaks = peakTracker.getTrackedPeaks();
+        // Optionally provide label or groundTruth as null in real-time usage
+        Map<String, Double> featureMap = buildFeaturesFromTracker(
+                trackedPeaks,
+                alignedCIR,
+                /* distanceBin= */ (double) dCm  // If you want to store distance as "DistanceBin"
+        );
+
+        // 10) Store features for classification
         synchronized (collectedFeatures) {
-            collectedFeatures.add(features);
+            collectedFeatures.add(featureMap);
         }
 
-        // Check if we have collected enough CIRs
+        // (Optional) If we have enough features, classify
         if (collectedFeatures.size() >= NUM_CIRS_TO_COLLECT) {
-            // Evaluate feature variance
-            boolean isStable = evaluateFeatureVariance(collectedFeatures);
-
-            if (isStable) {
-                // Proceed with classification and majority voting
-                classifyCollectedCIRs();
-            } else {
-                // Data is unstable, discard and start over
-                synchronized (collectedFeatures) {
-                    collectedFeatures.clear();
-                }
-                synchronized (classificationResults) {
-                    classificationResults.clear();
-                }
-                // Optionally log or display a message indicating instability
-                Handler mainHandler = new Handler(Looper.getMainLooper());
-                mainHandler.post(() -> {
-                    logReceivedData("Data unstable, collecting new CIRs...\n");
-                });
-            }
+            classifyCollectedCIRs(); // existing method that does majority vote
         }
     }
-    private boolean evaluateFeatureVariance(List<Map<String, Double>> featuresList) {
-        Map<String, List<Double>> featureValuesMap = new HashMap<>();
 
-        // Collect all values for each feature
-        for (Map<String, Double> features : featuresList) {
-            for (String featureName : features.keySet()) {
-                if (!featureValuesMap.containsKey(featureName)) {
-                    featureValuesMap.put(featureName, new ArrayList<>());
-                }
-                featureValuesMap.get(featureName).add(features.get(featureName));
+    /**
+     * detectPeaksLocalMax: a simplified version that only uses local maxima
+     * with a specified amplitude threshold and minDistance,
+     * mirroring the "regular peaks" logic in Python's single_frame_peaks.
+     */
+    private List<Integer> detectPeaksLocalMax(
+            double[] data,
+            double amplitudeThreshold,
+            int minDistance,
+            boolean debug
+    ) {
+        if (data == null || data.length < 3) {
+            return new ArrayList<>();
+        }
+
+        // Step A: Identify local maxima above amplitudeThreshold
+        List<Integer> rawPeaks = new ArrayList<>();
+        for (int i = 1; i < data.length - 1; i++) {
+            if (data[i] > amplitudeThreshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
+                rawPeaks.add(i);
             }
         }
 
-        // Calculate variance for each feature
-        for (String featureName : featureValuesMap.keySet()) {
-            List<Double> values = featureValuesMap.get(featureName);
-            double variance = calculateVariance(values);
+        // Step B: Apply minDistance by prioritizing peaks with higher amplitude
+        // Sort peaks in descending amplitude
+        rawPeaks.sort((p1, p2) -> Double.compare(data[p2], data[p1]));
 
-            // Compare with threshold
-            double threshold = varianceThresholds.getOrDefault(featureName, Double.MAX_VALUE);
-            if (variance > threshold) {
-                Log.d("FeatureVariance", "Feature " + featureName + " variance " + variance + " exceeds threshold " + threshold);
-                return false; // Data is unstable
+        List<Integer> filteredPeaks = new ArrayList<>();
+        boolean[] removed = new boolean[data.length];
+
+        for (int peakIdx : rawPeaks) {
+            if (!removed[peakIdx]) {
+                filteredPeaks.add(peakIdx);
+                // Mark ±minDistance as removed
+                int start = Math.max(peakIdx - minDistance, 0);
+                int end   = Math.min(peakIdx + minDistance, data.length - 1);
+                for (int j = start; j <= end; j++) {
+                    removed[j] = true;
+                }
+                // Re-enable the actual peak to keep it recognized
+                removed[peakIdx] = false;
             }
         }
 
-        return true; // Data is stable
+        // Finally, sort in ascending order of index
+        filteredPeaks.sort(Integer::compare);
+
+        if (debug) {
+            Log.d("detectPeaksLocalMax",
+                    String.format("rawPeaks=%d, finalPeaks=%d", rawPeaks.size(), filteredPeaks.size()));
+        }
+
+        return filteredPeaks;
     }
 
-    private double calculateVariance(List<Double> values) {
-        int n = values.size();
-        if (n == 0) return 0.0;
 
-        double mean = 0.0;
-        for (double v : values) {
-            mean += v;
-        }
-        mean /= n;
 
-        double variance = 0.0;
-        for (double v : values) {
-            variance += (v - mean) * (v - mean);
-        }
-        variance /= n;
-
-        return variance;
-    }
 
     private void classifyCollectedCIRs() {
         // Clear previous classification results
@@ -1157,200 +1171,369 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
         return alignedCIR;
     }
-    private List<Integer> detectPeaks(double[] data) {
-        double slopeThreshold = 1.0;
-        double amplitudeThreshold = 220.0;
-        int minDistance = 100;
 
-        double[] firstDerivative = computeGradient(data);
-        double[] secondDerivative = computeGradient(firstDerivative);
 
-        // Identify potential merged peaks
-        List<Integer> potentialMergedPeaks = new ArrayList<>();
-        for (int j = 1; j < data.length - 1; j++) {
-            boolean slopeCondition = Math.abs(firstDerivative[j]) < slopeThreshold;
-            boolean convexityCondition = secondDerivative[j - 1] * secondDerivative[j + 1] < 0;
-            boolean amplitudeCondition = data[j] > amplitudeThreshold;
+    /*************************************************************
+     * 2) PEAK TRACKING (UnboundedPeakTracker)
+     *    Mirrors the Python "UnboundedPeakTracker" class.
+     *************************************************************/
+    static public class UnboundedPeakTracker {
+        private final int tolerance;
+        private final int maxUnmatchedFrames;
+        private final boolean debug;
 
-            if (slopeCondition && convexityCondition && amplitudeCondition) {
-                potentialMergedPeaks.add(j);
+        // Each item: { peak_id, index, unmatched_count }
+        private final List<Map<String, Object>> oldPeaks = new ArrayList<>();
+        private int nextPeakId = 1;
+
+        public UnboundedPeakTracker(int tolerance, int maxUnmatchedFrames, boolean debug) {
+            this.tolerance = tolerance;
+            this.maxUnmatchedFrames = maxUnmatchedFrames;
+            this.debug = debug;
+        }
+
+        /**
+         * Update the tracker with newly detected peaks from the current frame.
+         *
+         * @param newPeaks   list of peak indices from detectPeaks()
+         * @param frameIdx   optional, for logging
+         */
+        public synchronized void update(List<Integer> newPeaks, Integer frameIdx) {
+            if (debug) {
+                Log.d("PeakTracker", String.format(
+                        "update(frame=%d), newPeaks=%s\n   oldPeaks before => %s",
+                        (frameIdx == null ? -1 : frameIdx), newPeaks, oldPeaks.toString()
+                ));
             }
-        }
 
-        // Detect regular peaks without applying minDistance
-        List<Integer> regularPeaks = findRegularPeaksWithoutMinDistance(data, amplitudeThreshold);
-
-        // Combine all peaks
-        Set<Integer> allPeaksSet = new HashSet<>(potentialMergedPeaks);
-        allPeaksSet.addAll(regularPeaks);
-        List<Integer> allPeaks = new ArrayList<>(allPeaksSet);
-
-        // Apply minimum distance criterion to all peaks, prioritizing higher amplitude peaks
-        List<Integer> filteredPeaks = applyMinDistanceCriterionToAllPeaks(allPeaks, data, minDistance);
-
-        return filteredPeaks;
-    }
-
-    private double[] computeGradient(double[] data) {
-        double[] gradient = new double[data.length];
-        gradient[0] = data[1] - data[0];
-        for (int i = 1; i < data.length - 1; i++) {
-            gradient[i] = (data[i + 1] - data[i - 1]) / 2.0;
-        }
-        gradient[data.length - 1] = data[data.length - 1] - data[data.length - 2];
-        return gradient;
-    }
-
-    private List<Integer> findRegularPeaksWithoutMinDistance(double[] data, double amplitudeThreshold) {
-        List<Integer> peaks = new ArrayList<>();
-        for (int i = 1; i < data.length - 1; i++) {
-            if (data[i] > amplitudeThreshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
-                peaks.add(i);
+            // 1) Increment unmatched_count for all stored peaks
+            for (Map<String, Object> p : oldPeaks) {
+                int unmatchedCount = (int) p.get("unmatched_count");
+                p.put("unmatched_count", unmatchedCount + 1);
             }
-        }
-        return peaks;
-    }
 
-    private List<Integer> applyMinDistanceCriterionToAllPeaks(List<Integer> peaks, double[] data, int minDistance) {
-        // Sort peaks by amplitude in descending order
-        peaks.sort((p1, p2) -> Double.compare(data[p2], data[p1]));
+            boolean[] matchedFlags = new boolean[oldPeaks.size()];
 
-        List<Integer> filteredPeaks = new ArrayList<>();
-        boolean[] removed = new boolean[data.length];
-
-        for (int peak : peaks) {
-            if (!removed[peak]) {
-                filteredPeaks.add(peak);
-                // Mark peaks within minDistance as removed
-                int start = Math.max(peak - minDistance, 0);
-                int end = Math.min(peak + minDistance, data.length - 1);
-                for (int i = start; i <= end; i++) {
-                    removed[i] = true;
+            // 2) For each new peak, try to match with an existing one
+            for (int pk : newPeaks) {
+                int bestIdx = -1;
+                double bestDist = Double.MAX_VALUE;
+                for (int i = 0; i < oldPeaks.size(); i++) {
+                    Map<String, Object> oldp = oldPeaks.get(i);
+                    double dist = Math.abs(pk - (double) oldp.get("index"));
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestIdx = i;
+                    }
                 }
-                removed[peak] = false; // Keep the current peak
+
+                if (bestIdx >= 0 && bestDist <= tolerance) {
+                    // Matched an existing peak
+                    Map<String, Object> oldp = oldPeaks.get(bestIdx);
+                    oldp.put("index", (double) pk);
+                    oldp.put("unmatched_count", 0);
+                    matchedFlags[bestIdx] = true;
+
+                    if (debug) {
+                        Log.d("PeakTracker", String.format(
+                                "   new peak %d => matched peak_id=%s (dist=%.1f)",
+                                pk, oldp.get("peak_id"), bestDist
+                        ));
+                    }
+                } else {
+                    // No matching peak => create a new one
+                    Map<String, Object> newPeakMap = new HashMap<>();
+                    newPeakMap.put("peak_id", nextPeakId);
+                    newPeakMap.put("index", (double) pk);
+                    newPeakMap.put("unmatched_count", 0);
+                    oldPeaks.add(newPeakMap);
+
+                    // Expand matchedFlags array
+                    boolean[] newMatched = new boolean[matchedFlags.length + 1];
+                    System.arraycopy(matchedFlags, 0, newMatched, 0, matchedFlags.length);
+                    newMatched[matchedFlags.length] = true;
+                    matchedFlags = newMatched;
+
+                    if (debug) {
+                        Log.d("PeakTracker", String.format(
+                                "   new peak %d => created new_id=%d", pk, nextPeakId
+                        ));
+                    }
+                    nextPeakId++;
+                }
+            }
+
+            // 3) Remove peaks that have been unmatched for too many frames
+            List<Integer> removeIndices = new ArrayList<>();
+            for (int i = 0; i < oldPeaks.size(); i++) {
+                Map<String, Object> oldp = oldPeaks.get(i);
+                int unmatchedCount = (int) oldp.get("unmatched_count");
+                if (unmatchedCount > maxUnmatchedFrames) {
+                    removeIndices.add(i);
+                }
+            }
+            // Remove from the end
+            Collections.sort(removeIndices, Collections.reverseOrder());
+            for (int index : removeIndices) {
+                if (debug) {
+                    Map<String, Object> removed = oldPeaks.get(index);
+                    Log.d("PeakTracker", String.format(
+                            "   removing old peak_id=%s for unmatched_count=%d",
+                            removed.get("peak_id"), removed.get("unmatched_count")
+                    ));
+                }
+                oldPeaks.remove(index);
+            }
+
+            if (debug) {
+                Log.d("PeakTracker", "   oldPeaks after => " + oldPeaks.toString());
             }
         }
 
-        // Sort the filtered peaks by their original indices
-        filteredPeaks.sort(Integer::compareTo);
-
-        return filteredPeaks;
-    }
-
-    private Map<String, Double> extractFeatures(double[] alignedCIR, List<Integer> peakIndices) {
-        Map<String, Double> features = new HashMap<>();
-
-        double[] peakMagnitudes = new double[peakIndices.size()];
-        for (int i = 0; i < peakIndices.size(); i++) {
-            peakMagnitudes[i] = alignedCIR[peakIndices.get(i)];
+        /**
+         * Resets the tracker (e.g., if seat label or condition changes).
+         */
+        public synchronized void reset() {
+            oldPeaks.clear();
+            nextPeakId = 1;
         }
 
-        int[] sortedByPosition = sortIndicesByValues(peakIndices.stream().mapToInt(Integer::intValue).toArray());
-        int[] sortedByMagnitude = sortIndicesByValuesDescending(peakMagnitudes);
+        /**
+         * Returns the currently stored (tracked) peaks, so that
+         * feature extraction can consider unmatched older peaks as well.
+         */
+        public synchronized List<Map<String, Object>> getTrackedPeaks() {
+            return oldPeaks;
+        }
+    }
 
-        int numPeaks = peakIndices.size();
+
+
+
+
+
+    /**
+     * Example: builds seat-localization features from the tracked peaks
+     * so the logic matches the Python "build_features_including_unmatched()".
+     */
+    /**
+     * Updated method to build seat-localization features from the tracked peaks,
+     * ensuring the final Map includes keys in the same order used by Python.
+     *
+     * Order of keys:
+     *  1. Num_Peaks
+     *  2. Pmax
+     *  3. Tmax
+     *  4. P_pos_ratio_1
+     *  5. P_power_ratio_1
+     *  6. T_pos_distance_1
+     *  7. T_power_distance_1
+     *  8. P_pos_ratio_2
+     *  9. P_power_ratio_2
+     * 10. T_pos_distance_2
+     * 11. T_power_distance_2
+     * 12. P_pos_ratio_3
+     * 13. P_power_ratio_3
+     * 14. T_pos_distance_3
+     * 15. T_power_distance_3
+     * 16. Label        (optional in real-time)
+     * 17. GroundTruth  (optional in real-time)
+     * 18. DistanceBin  (optional in real-time)
+     *
+     * Note: In a real-time Android app, "Label", "GroundTruth", and "DistanceBin"
+     * are often unknown. They are primarily for offline or debugging usage.
+     * If you still wish to store them, pass them as method parameters (or set them to defaults).
+     */
+    private Map<String, Double> buildFeaturesFromTracker(
+            List<Map<String, Object>> trackedPeaks,
+            double[] alignedCIR,
+            Double distanceBin    // can be null if unknown in real-time
+    ) {
+        // Using LinkedHashMap preserves insertion order, matching the Python column order.
+        Map<String, Double> feats = new LinkedHashMap<>();
+
+        // 1) Count valid peaks (similar to Python).
+        if (trackedPeaks.isEmpty()) {
+            // If no peaks, fill default placeholders in correct order:
+            feats.put("Num_Peaks", 0.0);
+            feats.put("Pmax", 0.0);
+            feats.put("Tmax", 0.0);
+
+            feats.put("P_pos_ratio_1", 1.0);
+            feats.put("P_power_ratio_1", 1.0);
+            feats.put("T_pos_distance_1", 0.0);
+            feats.put("T_power_distance_1", 0.0);
+
+            feats.put("P_pos_ratio_2", 1.0);
+            feats.put("P_power_ratio_2", 1.0);
+            feats.put("T_pos_distance_2", 0.0);
+            feats.put("T_power_distance_2", 0.0);
+
+            feats.put("P_pos_ratio_3", 1.0);
+            feats.put("P_power_ratio_3", 1.0);
+            feats.put("T_pos_distance_3", 0.0);
+            feats.put("T_power_distance_3", 0.0);
+
+            // Optional fields:
+            feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+
+            return feats;
+        }
+
+        // Convert tracked peak indices + amplitudes
+        List<Integer> peakIndices = new ArrayList<>();
+        List<Double> peakAmps = new ArrayList<>();
+        for (Map<String, Object> pk : trackedPeaks) {
+            int idx = (int) Math.round((double) pk.get("index"));
+            if (idx >= 0 && idx < alignedCIR.length) {
+                peakIndices.add(idx);
+                peakAmps.add(alignedCIR[idx]);
+            }
+        }
+
+        // If all tracked peaks are out of range, treat as no peaks
+        if (peakIndices.isEmpty()) {
+            feats.put("Num_Peaks", 0.0);
+            feats.put("Pmax", 0.0);
+            feats.put("Tmax", 0.0);
+
+            feats.put("P_pos_ratio_1", 1.0);
+            feats.put("P_power_ratio_1", 1.0);
+            feats.put("T_pos_distance_1", 0.0);
+            feats.put("T_power_distance_1", 0.0);
+
+            feats.put("P_pos_ratio_2", 1.0);
+            feats.put("P_power_ratio_2", 1.0);
+            feats.put("T_pos_distance_2", 0.0);
+            feats.put("T_power_distance_2", 0.0);
+
+            feats.put("P_pos_ratio_3", 1.0);
+            feats.put("P_power_ratio_3", 1.0);
+            feats.put("T_pos_distance_3", 0.0);
+            feats.put("T_power_distance_3", 0.0);
+
+            // Optional fields:
+            feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+
+            return feats;
+        }
+
+        // Convert to arrays for sorting
+        int n = peakIndices.size();
+        int[] idxArray = new int[n];
+        double[] ampArray = new double[n];
+        for (int i = 0; i < n; i++) {
+            idxArray[i] = peakIndices.get(i);
+            ampArray[i] = peakAmps.get(i);
+        }
+
+        // Num_Peaks
+        feats.put("Num_Peaks", (double) n);
+
+        // Find max amplitude
+        int idxMax = argMax(ampArray);
+        double pmax = ampArray[idxMax];
+        double tmax = idxArray[idxMax]; // index of that max peak
+        feats.put("Pmax", pmax);
+        feats.put("Tmax", tmax);
+
+        // Sort peaks by position (ascending) and by amplitude (descending)
+        int[] sortedByPosition = sortIndicesByValues(idxArray);
+        int[] sortedByAmplitude = sortIndicesByValuesDescending(ampArray);
+
+        // We'll compute up to p=4 -> 3 ratio sets
         int p = 4;
+        List<Double> pPosRatios = new ArrayList<>();
+        List<Double> pPowRatios = new ArrayList<>();
+        List<Double> tPosDistances = new ArrayList<>();
+        List<Double> tPowDistances = new ArrayList<>();
 
-        List<Double> P_pos_ratios = new ArrayList<>();
-        List<Double> P_power_ratios = new ArrayList<>();
-        List<Integer> T_pos_distances = new ArrayList<>();
-        List<Integer> T_power_distances = new ArrayList<>();
+        if (n > 1) {
+            int numRatios = Math.min(p - 1, n - 1);
 
-        if (numPeaks > 1) {
-            int numRatios = Math.min(p - 1, numPeaks - 1);
-
-            // Calculate position-based ratios and distances
+            // Position-based
             for (int j = 1; j <= numRatios; j++) {
-                double P_pos_ratio = peakMagnitudes[sortedByPosition[0]] / peakMagnitudes[sortedByPosition[j]];
-                P_pos_ratios.add(P_pos_ratio);
+                double ratio = ampArray[sortedByPosition[0]] / ampArray[sortedByPosition[j]];
+                pPosRatios.add(ratio);
 
-                int T_pos_distance = peakIndices.get(sortedByPosition[j]) - peakIndices.get(sortedByPosition[0]);
-                T_pos_distances.add(T_pos_distance);
+                double dist = idxArray[sortedByPosition[j]] - idxArray[sortedByPosition[0]];
+                tPosDistances.add(dist);
             }
 
-            // Calculate magnitude-based ratios and distances
+            // Amplitude-based
             for (int j = 1; j <= numRatios; j++) {
-                double P_power_ratio = peakMagnitudes[sortedByMagnitude[0]] / peakMagnitudes[sortedByMagnitude[j]];
-                P_power_ratios.add(P_power_ratio);
+                double ratio = ampArray[sortedByAmplitude[0]] / ampArray[sortedByAmplitude[j]];
+                pPowRatios.add(ratio);
 
-                int T_power_distance = peakIndices.get(sortedByMagnitude[j]) - peakIndices.get(sortedByMagnitude[0]);
-                T_power_distances.add(T_power_distance);
+                double dist = idxArray[sortedByAmplitude[j]] - idxArray[sortedByAmplitude[0]];
+                tPowDistances.add(dist);
             }
-        } else {
-            P_pos_ratios.add(1.0);
-            P_power_ratios.add(1.0);
-            T_pos_distances.add(0);
-            T_power_distances.add(0);
         }
 
-        double Pmax = numPeaks > 0 ? peakMagnitudes[sortedByMagnitude[0]] : 0;
-        int Tmax = numPeaks > 0 ? peakIndices.get(sortedByMagnitude[0]) : 0;
+        // Ensure we have 3 entries
+        while (pPosRatios.size() < 3) pPosRatios.add(1.0);
+        while (tPosDistances.size() < 3) tPosDistances.add(0.0);
+        while (pPowRatios.size() < 3) pPowRatios.add(1.0);
+        while (tPowDistances.size() < 3) tPowDistances.add(0.0);
 
-        // Ensure the lists have exactly 3 elements
-        while (P_pos_ratios.size() < 3) P_pos_ratios.add(1.0);
-        while (P_power_ratios.size() < 3) P_power_ratios.add(1.0);
-        while (T_pos_distances.size() < 3) T_pos_distances.add(0);
-        while (T_power_distances.size() < 3) T_power_distances.add(0);
+        // Put them in order:
+        feats.put("P_pos_ratio_1", pPosRatios.get(0));
+        feats.put("P_power_ratio_1", pPowRatios.get(0));
+        feats.put("T_pos_distance_1", tPosDistances.get(0));
+        feats.put("T_power_distance_1", tPowDistances.get(0));
 
-        // Store features in the specified order
-        features.put("Num_Peaks", (double) numPeaks);
-        features.put("Pmax", Pmax);
-        features.put("Tmax", (double) Tmax);
+        feats.put("P_pos_ratio_2", pPosRatios.get(1));
+        feats.put("P_power_ratio_2", pPowRatios.get(1));
+        feats.put("T_pos_distance_2", tPosDistances.get(1));
+        feats.put("T_power_distance_2", tPowDistances.get(1));
 
-        features.put("P_pos_ratio_1", P_pos_ratios.get(0));
-        features.put("P_power_ratio_1", P_power_ratios.get(0));
-        features.put("T_pos_distance_1", (double) T_pos_distances.get(0));
-        features.put("T_power_distance_1", (double) T_power_distances.get(0));
+        feats.put("P_pos_ratio_3", pPosRatios.get(2));
+        feats.put("P_power_ratio_3", pPowRatios.get(2));
+        feats.put("T_pos_distance_3", tPosDistances.get(2));
+        feats.put("T_power_distance_3", tPowDistances.get(2));
 
-        features.put("P_pos_ratio_2", P_pos_ratios.get(1));
-        features.put("P_power_ratio_2", P_power_ratios.get(1));
-        features.put("T_pos_distance_2", (double) T_pos_distances.get(1));
-        features.put("T_power_distance_2", (double) T_power_distances.get(1));
+        // Optional fields: "Label", "GroundTruth", "DistanceBin"
+        // For real-time usage, you may skip or default them.
+        feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
 
-        features.put("P_pos_ratio_3", P_pos_ratios.get(2));
-        features.put("P_power_ratio_3", P_power_ratios.get(2));
-        features.put("T_pos_distance_3", (double) T_pos_distances.get(2));
-        features.put("T_power_distance_3", (double) T_power_distances.get(2));
-
-        return features;
+        return feats;
     }
 
-    private int argMax(double[] inputs) {
+
+    private int argMax(double[] arr) {
         int maxIndex = 0;
-        double maxValue = inputs[0];
-        for (int i = 1; i < inputs.length; i++) {
-            if (inputs[i] > maxValue) {
-                maxValue = inputs[i];
+        double maxVal = arr[0];
+        for (int i = 1; i < arr.length; i++) {
+            if (arr[i] > maxVal) {
+                maxVal = arr[i];
                 maxIndex = i;
             }
         }
         return maxIndex;
     }
-//    private void displayClassificationResult(String className) {
-//        // Update your UI elements here
-//        // For example, display the class name in a TextView
-//        TextView resultTextView = getView().findViewById(R.id.resultTextView);
-//        resultTextView.setText("Predicted Class: " + className);
-//    }
 
-
-    private int[] sortIndicesByValues(int[] values) {
-        Integer[] indices = new Integer[values.length];
-        for (int i = 0; i < values.length; i++) {
+    /** Sort integer array in ascending order, return index array. */
+    private int[] sortIndicesByValues(int[] arr) {
+        Integer[] indices = new Integer[arr.length];
+        for (int i = 0; i < arr.length; i++) {
             indices[i] = i;
         }
-        Arrays.sort(indices,Comparator.comparingInt(i -> values[i]));
+        Arrays.sort(indices, Comparator.comparingInt(i -> arr[i]));
         return Arrays.stream(indices).mapToInt(Integer::intValue).toArray();
     }
 
-    private int[] sortIndicesByValuesDescending(double[] values) {
-        Integer[] indices = new Integer[values.length];
-        for (int i = 0; i < values.length; i++) {
+    /** Sort double array in descending order, return index array. */
+    private int[] sortIndicesByValuesDescending(double[] arr) {
+        Integer[] indices = new Integer[arr.length];
+        for (int i = 0; i < arr.length; i++) {
             indices[i] = i;
         }
-        Arrays.sort(indices, (i1, i2) -> Double.compare(values[i2], values[i1]));
+        Arrays.sort(indices, (i1, i2) -> Double.compare(arr[i2], arr[i1]));
         return Arrays.stream(indices).mapToInt(Integer::intValue).toArray();
     }
+
+
+
 
 
 
