@@ -690,26 +690,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
         updateSendBtn(controlLines.sendAllowed ? SendButtonState.Idle : SendButtonState.Disabled);
     }
-    private void logCIRData(List<Double> cirData) {
-        String fileName = "CIR_Log.txt";
-        String filePath = Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + fileName;
 
-        StringBuilder sb = new StringBuilder();
-        for (Double value : cirData) {
-            sb.append(value).append(",");
-        }
-        sb.append("\n");
-
-        try {
-            File file = new File(filePath);
-            FileWriter writer = new FileWriter(file, true); // true for append mode
-            writer.append(sb.toString());
-            writer.flush();
-            writer.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
 
     private void receive(ArrayDeque<byte[]> datas) {
         SpannableStringBuilder spn = new SpannableStringBuilder();
@@ -1593,8 +1574,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         File filePath2 = new File(getActivity().getFilesDir(), fileName2);
 
         // Write internal log files to external storage
-        writeLogFileToExternalStorage(fileName1);
-        writeLogFileToExternalStorage(fileName2);
+//        writeLogFileToExternalStorage(fileName1);
+//        writeLogFileToExternalStorage(fileName2);
 
         ArrayList<Uri> filesToShare = new ArrayList<>();
 
