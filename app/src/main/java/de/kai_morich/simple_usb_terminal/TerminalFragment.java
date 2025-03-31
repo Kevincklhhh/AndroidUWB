@@ -26,6 +26,7 @@ import android.text.SpannableStringBuilder;
 import android.text.method.ScrollingMovementMethod;
 import android.text.style.ForegroundColorSpan;
 import android.util.Log;
+import android.util.Pair;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -129,13 +130,26 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
 
 
-    private List<Float> gyroWindow = new ArrayList<>();
-    private List<Float> accelWindow = new ArrayList<>();
+    private List<Pair<Long, float[]>> gyroWindow = new ArrayList<>();
+    private List<Pair<Long, float[]>> accelWindow = new ArrayList<>();
     private long windowStartTime = 0;
-    private static final int WINDOW_SIZE_MS = 1000;  // 1 second window
+    private static final int WINDOW_SIZE_MS = 1600;
+    private static final int STEP_MS = 200;
+    private static final float GYROSCOPE_TRIGGER_THRESHOLD = 2.2f;
+    private static final float ACCEL_STD_THRESHOLD = 1.2f;
+    private static final float NET_DISPLACEMENT_THRESHOLD = 1.0f;
+    private static final float ACCEL_HIGH_THRESHOLD = 1.0f;
+    private int dataCollectionCount = 0;
 
-    private static final float GYROSCOPE_THRESHOLD = 1.4f;  // Example threshold for gyro magnitude
-    private static final float ACCEL_THRESHOLD = 1.4f;      // Example threshold for accel magnitude
+
+    private static final float MIN_DURATION_ABOVE_ACCEL = 0.7f;  // in seconds
+    private static final float GYROSCOPE_THRESHOLD = 1.0f; // for activation (unchanged)
+    private static final float ACCEL_THRESHOLD = 1.0f;      // for activation (unchanged)
+    // To track when we last processed a window.
+    private long lastProcessTime = 0;
+    private static final float EXIT_DEBOUNCE_DURATION = 1000; // 1 second debounce (unchanged)
+
+
 
     private static final float ACCEL_DURATION_THRESHOLD = 0.6f;  // 30% of samples in window must exceed ACCEL_MIN_VALUE
     private static final float ACCEL_MIN_VALUE = 1.4f;
@@ -259,8 +273,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             getActivity().runOnUiThread(this::connect);
         }
 
-        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_UI);
-        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_UI);
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
 
         if(connected == Connected.True)
             controlLines.start();
@@ -322,8 +336,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             Toast.makeText(getActivity(), "Sensor Manager not available", Toast.LENGTH_SHORT).show();
         }
         // Register sensors at UI (5Hz) rate.
-        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_UI);
-        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_UI);
+        sensorManager.registerListener(sensorEventListener, linearAccelerometer, SensorManager.SENSOR_DELAY_GAME);
+        sensorManager.registerListener(sensorEventListener, gyroscope, SensorManager.SENSOR_DELAY_GAME);
 
         return view;
     }
@@ -355,101 +369,170 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
     };
 
+    // -------------------- GYROSCOPE HANDLER --------------------
     private void handleGyroscopeData(float[] values, long timestamp) {
-        float gyroMag = (float) Math.sqrt(values[0]*values[0] + values[1]*values[1] + values[2]*values[2]);
-
-        // Log gyroscope reading.
-        String data = String.format("GYROSCOPE TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
-                timestamp, values[0], values[1], values[2], gyroMag);
-        logIMUData(data);
-
-        // Add current sample to the gyroscope window.
-        gyroWindow.add(gyroMag);
-    }
-
-    // -------------------- ACCELEROMETER HANDLER --------------------
-    private void handleAccelerometerData(float[] values, long timestamp) {
-        float accelMag = (float) Math.sqrt(values[0]*values[0] + values[1]*values[1] + values[2]*values[2]);
-
-        // Log the accelerometer reading.
-        String data = String.format("ACCELEROMETER TIMESTAMP: %d, X: %.4f, Y: %.4f, Z: %.4f, Mag: %.4f\n",
-                timestamp, values[0], values[1], values[2], accelMag);
-        logIMUData(data);
-
-        // Initialize window start time if window is empty.
-        if (gyroWindow.isEmpty() && accelWindow.isEmpty()) {
-            windowStartTime = timestamp;
-        }
-
-        // Add current sample to the accelerometer window.
-        accelWindow.add(accelMag);
-
-        // Check if window duration is reached.
-        if (timestamp - windowStartTime >= WINDOW_SIZE_MS) {
-            processWindow();
-            // Clear buffers and update window start time.
-            gyroWindow.clear();
-            accelWindow.clear();
-            windowStartTime = timestamp;
-        }
-    }
-
-    private void processWindow() {
+        // If UWB ranging is active, skip processing new gyro data.
         if (isUwbActive) {
             return;
         }
 
-        // 1) Compute maximum gyroscope magnitude
-        float maxGyro = 0f;
-        for (float g : gyroWindow) {
-            if (g > maxGyro) {
-                maxGyro = g;
-            }
-        }
-
-        // 2) Compute average accelerometer magnitude
-        float sumAccel = 0f;
-        for (float a : accelWindow) {
-            sumAccel += a;
-        }
-        float avgAccel = (accelWindow.isEmpty()) ? 0 : sumAccel / accelWindow.size();
-
-        // 3) Compute proportion of samples above ACCEL_MIN_VALUE
-        int countAbove = 0;
-        for (float a : accelWindow) {
-            if (a > ACCEL_MIN_VALUE) {
-                countAbove++;
-            }
-        }
-        float proportionAbove = 0f;
-        if (!accelWindow.isEmpty()) {
-            proportionAbove = (float) countAbove / (float) accelWindow.size();
-        }
-
-        // Log the computed features for debugging
-        String debugMsg = String.format(
-                "Window [%d - %d]: Max Gyro = %.4f, Avg Accel = %.4f, PropAbove(%.1f) = %.3f",
-                windowStartTime, windowStartTime + WINDOW_SIZE_MS, maxGyro, avgAccel, ACCEL_MIN_VALUE, proportionAbove
+        float gyroMag = (float) Math.sqrt(
+                values[0] * values[0] +
+                        values[1] * values[1] +
+                        values[2] * values[2]
         );
-        logIMUData(debugMsg + "\n");
+        // Add the full 3-axis reading and timestamp to the gyro buffer.
+        gyroWindow.add(new Pair<>(timestamp, values.clone()));
 
-        // 4) Check thresholds (original + new proportion threshold)
-        if (maxGyro > GYROSCOPE_THRESHOLD
-                && avgAccel > ACCEL_THRESHOLD
-                && proportionAbove > ACCEL_DURATION_THRESHOLD) {
-
-            // We interpret this as a cross-seat movement
-            updateReceiveText("Cross-seat movement detected => " + debugMsg);
-            activateUwbRanging();
+        // Check if it's time to process the rolling window.
+        if (timestamp - lastProcessTime >= STEP_MS) {
+            processWindow(timestamp);
+            lastProcessTime = timestamp;
         }
     }
+
+    private void handleAccelerometerData(float[] values, long timestamp) {
+        // If UWB ranging is active, skip processing new accelerometer data.
+        if (isUwbActive) {
+            return;
+        }
+
+        float accelMag = (float) Math.sqrt(
+                values[0] * values[0] +
+                        values[1] * values[1] +
+                        values[2] * values[2]
+        );
+        // Add the full 3-axis reading and timestamp to the accelerometer buffer.
+        accelWindow.add(new Pair<>(timestamp, values.clone()));
+
+        // Check if it's time to process the rolling window.
+        if (timestamp - lastProcessTime >= STEP_MS) {
+            processWindow(timestamp);
+            lastProcessTime = timestamp;
+        }
+    }
+
+
+    private void processWindow(long currentTimestamp) {
+        // Remove samples older than the current window from both buffers.
+        while (!accelWindow.isEmpty() && accelWindow.get(0).first < currentTimestamp - WINDOW_SIZE_MS) {
+            accelWindow.remove(0);
+        }
+        while (!gyroWindow.isEmpty() && gyroWindow.get(0).first < currentTimestamp - WINDOW_SIZE_MS) {
+            gyroWindow.remove(0);
+        }
+
+        // --- Sort accelWindow by timestamp ---
+        if (!accelWindow.isEmpty()) {
+            Collections.sort(accelWindow, new Comparator<Pair<Long, float[]>>() {
+                @Override
+                public int compare(Pair<Long, float[]> p1, Pair<Long, float[]> p2) {
+                    return Long.compare(p1.first, p2.first);
+                }
+            });
+        }
+
+        // 1) Compute the maximum gyroscope magnitude within the window.
+        float maxGyro = 0f;
+        for (Pair<Long, float[]> g : gyroWindow) {
+            float mag = (float) Math.sqrt(
+                    g.second[0] * g.second[0] +
+                            g.second[1] * g.second[1] +
+                            g.second[2] * g.second[2]
+            );
+            if (mag > maxGyro) {
+                maxGyro = mag;
+            }
+        }
+
+        // 2) Compute the standard deviation of the accelerometer magnitudes.
+        int n = accelWindow.size();
+        double stdAccelMag = 0.0;
+        double netDisplacement = 0.0;
+        if (n > 1) {
+            double[] t = new double[n];
+            double[] ax = new double[n];
+            double[] ay = new double[n];
+            double[] az = new double[n];
+            double[] accelMags = new double[n];
+
+            for (int i = 0; i < n; i++) {
+                t[i] = accelWindow.get(i).first / 1000.0; // convert ms to seconds
+                float[] values = accelWindow.get(i).second;
+                ax[i] = values[0];
+                ay[i] = values[1];
+                az[i] = values[2];
+                accelMags[i] = Math.sqrt(values[0]*values[0] + values[1]*values[1] + values[2]*values[2]);
+            }
+
+            // Standard deviation of the accelerometer magnitudes.
+            double sumAccelMag = 0.0;
+            for (int i = 0; i < n; i++) {
+                sumAccelMag += accelMags[i];
+            }
+            double meanAccelMag = sumAccelMag / n;
+            double sumSqDiff = 0.0;
+            for (int i = 0; i < n; i++) {
+                double diff = accelMags[i] - meanAccelMag;
+                sumSqDiff += diff * diff;
+            }
+            stdAccelMag = Math.sqrt(sumSqDiff / n);
+
+            // Compute net displacement via double integration.
+            double[] vx = new double[n];
+            double[] vy = new double[n];
+            double[] vz = new double[n];
+            vx[0] = 0; vy[0] = 0; vz[0] = 0;
+            for (int i = 1; i < n; i++) {
+                double dt = t[i] - t[i-1];
+                vx[i] = vx[i-1] + 0.5 * (ax[i] + ax[i-1]) * dt;
+                vy[i] = vy[i-1] + 0.5 * (ay[i] + ay[i-1]) * dt;
+                vz[i] = vz[i-1] + 0.5 * (az[i] + az[i-1]) * dt;
+            }
+            double[] sx = new double[n];
+            double[] sy = new double[n];
+            double[] sz = new double[n];
+            sx[0] = 0; sy[0] = 0; sz[0] = 0;
+            for (int i = 1; i < n; i++) {
+                double dt = t[i] - t[i-1];
+                sx[i] = sx[i-1] + 0.5 * (vx[i] + vx[i-1]) * dt;
+                sy[i] = sy[i-1] + 0.5 * (vy[i] + vy[i-1]) * dt;
+                sz[i] = sz[i-1] + 0.5 * (vz[i] + vz[i-1]) * dt;
+            }
+            netDisplacement = Math.sqrt(sx[n-1]*sx[n-1] + sy[n-1]*sy[n-1] + sz[n-1]*sz[n-1]);
+        }
+
+        // 3) Check thresholds: if maxGyro, accelerometer std, and net displacement all exceed their thresholds.
+        if (maxGyro > GYROSCOPE_TRIGGER_THRESHOLD &&
+                stdAccelMag > ACCEL_STD_THRESHOLD &&
+                netDisplacement > NET_DISPLACEMENT_THRESHOLD) {
+
+            String message = String.format(
+                    "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m",
+                    maxGyro, stdAccelMag, netDisplacement
+            );
+            updateReceiveText(message);
+            activateUwbRanging();
+
+            // Clear buffers to pause further IMU data accumulation during UWB ranging.
+            gyroWindow.clear();
+            accelWindow.clear();
+        }
+
+    }
+
+
+
+
+
+
 
     private void activateUwbRanging() {
         // Set flag to pause further IMU processing.
         isUwbActive = true;
 //        updateReceiveText("UWB ranging activated.");
 //        logIMUData("UWB ranging activated.\n");
-        send("initf 4 9600");
+        //send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
         uwbHandler.postDelayed(stopUwbRunnable, UWB_DURATION_MS);
@@ -866,7 +949,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             true  // debug = true for verbose logs
     );
     private void processCirDataAsync(Map<String, Object> cirData) {
-
         // 1) Parse raw data from the Map
         String fpIndex = (String) cirData.get("fpIndex");
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
@@ -895,8 +977,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // 6) Align the upsampled CIR using the first path index
         double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
 
-        // 7) Detect peaks (local maxima only, removing slope-based logic)
-        //    - amplitudeThreshold and minDistance are the main controls
+        // 7) Detect peaks (local maxima only)
         double amplitudeThreshold = 220.0;
         int minDistance = 100;
         List<Integer> framePeaks = detectPeaksLocalMax(alignedCIR, amplitudeThreshold, minDistance, /*debug=*/true);
@@ -906,23 +987,51 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
         // 9) Retrieve the stable/tracked peaks and build features
         List<Map<String, Object>> trackedPeaks = peakTracker.getTrackedPeaks();
-        // Optionally provide label or groundTruth as null in real-time usage
         Map<String, Double> featureMap = buildFeaturesFromTracker(
                 trackedPeaks,
                 alignedCIR,
-                /* distanceBin= */ (double) dCm  // If you want to store distance as "DistanceBin"
+                (double) dCm  // distance (optional)
         );
 
-        // 10) Store features for classification
-        synchronized (collectedFeatures) {
-            collectedFeatures.add(featureMap);
+        // 10) If featureMap is null or incomplete, skip classification
+        if (featureMap == null || featureMap.isEmpty()) {
+            logReceivedData("No valid features extracted; skipping classification.\n");
+            return;
         }
 
-        // (Optional) If we have enough features, classify
-        if (collectedFeatures.size() >= NUM_CIRS_TO_COLLECT) {
-            classifyCollectedCIRs(); // existing method that does majority vote
-        }
+        // 11) Build the feature vector in the correct order for your model
+        //     (Below is an example of 15 input features. Adjust to match your training.)
+        double[] featureVector = new double[] {
+                featureMap.getOrDefault("Num_Peaks", 0.0),
+                featureMap.getOrDefault("Pmax", 0.0),
+                featureMap.getOrDefault("Tmax", 0.0),
+                featureMap.getOrDefault("P_pos_ratio_1", 1.0),
+                featureMap.getOrDefault("P_power_ratio_1", 1.0),
+                featureMap.getOrDefault("T_pos_distance_1", 0.0),
+                featureMap.getOrDefault("T_power_distance_1", 0.0),
+                featureMap.getOrDefault("P_pos_ratio_2", 1.0),
+                featureMap.getOrDefault("P_power_ratio_2", 1.0),
+                featureMap.getOrDefault("T_pos_distance_2", 0.0),
+                featureMap.getOrDefault("T_power_distance_2", 0.0),
+                featureMap.getOrDefault("P_pos_ratio_3", 1.0),
+                featureMap.getOrDefault("P_power_ratio_3", 1.0),
+                featureMap.getOrDefault("T_pos_distance_3", 0.0),
+                featureMap.getOrDefault("T_power_distance_3", 0.0)
+        };
+
+        // 12) Classify using the stored model
+        //     This assumes your model has a .score(...) method returning probabilities or logits
+        double[] prediction = model.score(featureVector);
+
+        // 13) Convert the raw prediction to a label
+        int predictedLabel = argMax(prediction);
+
+        // 14) Logging & UI output
+        logReceivedData("predictedLabel : " + predictedLabel + "\n");
+        updateReceiveText(String.valueOf(predictedLabel));
     }
+
+
 
     /**
      * detectPeaksLocalMax: a simplified version that only uses local maxima
