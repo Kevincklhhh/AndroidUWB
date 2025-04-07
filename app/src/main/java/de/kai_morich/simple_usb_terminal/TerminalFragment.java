@@ -512,12 +512,38 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     maxGyro, stdAccelMag, netDisplacement
             );
             updateReceiveText(message);
+            //logIMUData(message);
+
+            // Iterate through the gyroscope window and log each reading.
+            for (Pair<Long, float[]> gyroReading : gyroWindow) {
+                String gyroMsg = String.format("GYROSCOPE TIMESTAMP: %d, X: %.8f, Y: %.8f, Z: %.8f\n",
+                        gyroReading.first,
+                        gyroReading.second[0],
+                        gyroReading.second[1],
+                        gyroReading.second[2]);
+                logIMUData(gyroMsg);
+            }
+
+            // Iterate through the accelerometer window and log each reading.
+            for (Pair<Long, float[]> accelReading : accelWindow) {
+                String accelMsg = String.format("ACCELEROMETER TIMESTAMP: %d, X: %.8f, Y: %.8f, Z: %.8f\n",
+                        accelReading.first,
+                        accelReading.second[0],
+                        accelReading.second[1],
+                        accelReading.second[2]);
+                logIMUData(accelMsg);
+            }
+
+            // (If magnetometer data is available, similar logging can be added here.)
+
+            // Activate UWB ranging.
             activateUwbRanging();
 
             // Clear buffers to pause further IMU data accumulation during UWB ranging.
             gyroWindow.clear();
             accelWindow.clear();
         }
+
 
     }
 
@@ -532,7 +558,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         isUwbActive = true;
 //        updateReceiveText("UWB ranging activated.");
 //        logIMUData("UWB ranging activated.\n");
-        //send("initf 4 9600");
+        send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
         uwbHandler.postDelayed(stopUwbRunnable, UWB_DURATION_MS);
