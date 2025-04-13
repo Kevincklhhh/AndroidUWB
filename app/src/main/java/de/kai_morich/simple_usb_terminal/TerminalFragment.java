@@ -503,9 +503,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 3) Check thresholds: if maxGyro, accelerometer std, and net displacement all exceed their thresholds.
-        if (maxGyro > GYROSCOPE_TRIGGER_THRESHOLD &&
-                stdAccelMag > ACCEL_STD_THRESHOLD &&
-                netDisplacement > NET_DISPLACEMENT_THRESHOLD) {
+        if (maxGyro > 2.0f ) {
 
             String message = String.format(
                     "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m",
@@ -561,7 +559,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        uwbHandler.postDelayed(stopUwbRunnable, UWB_DURATION_MS);
+        uwbHandler.postDelayed(stopUwbRunnable, 1000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -969,10 +967,11 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     // Inside your real-time processing code, you'd do something like:
-    private UnboundedPeakTracker peakTracker = new UnboundedPeakTracker(
-            100,   // tolerance
-            5,    // maxUnmatchedFrames
-            true  // debug = true for verbose logs
+    UnboundedPeakTracker peakTracker = new UnboundedPeakTracker(
+            90,   // tolerance
+            5,     // maxUnmatchedFrames
+            4,     // top-n to check, for example
+            true   // debug
     );
     private void processCirDataAsync(Map<String, Object> cirData) {
         // 1) Parse raw data from the Map
@@ -996,25 +995,40 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 5) Upsample the CIR
-        //    Assume CIRlength is the original length of cirMagnitude.
-        //    So if cirMagnitude.length == CIRlength, we do 64*CIRlength
+        //    Suppose CIRlength is the original length of cirMagnitude
+        //    If cirMagnitude.length == CIRlength, do upsample by 64x
+        int CIRlength = cirMagnitude.length;  // Or retrieve from somewhere if known
         double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
 
         // 6) Align the upsampled CIR using the first path index
         double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
 
-        // 7) Detect peaks (local maxima only)
+        // 7) Detect peaks (local maxima or derivative-based, per your method)
         double amplitudeThreshold = 220.0;
-        int minDistance = 100;
-        List<Integer> framePeaks = detectPeaksLocalMax(alignedCIR, amplitudeThreshold, minDistance, /*debug=*/true);
+        int minDistance = 90;
+        // If you have derivative-based approach, call detectPeaksCombined
+        // Otherwise, if local maxima only:
+        List<Integer> framePeaks = detectPeaksLocalMax(
+                alignedCIR,
+                amplitudeThreshold,
+                minDistance,
+                /*debug=*/true
+        );
 
-        // 8) Update our peak tracker to maintain continuity across frames
-        peakTracker.update(framePeaks, null);
+        UnboundedPeakTracker.UpdateResult updateResult = peakTracker.update(framePeaks);
+        List<Integer> stablePeaks = updateResult.getFinalIndices();
+        boolean stable = updateResult.isStable();
 
-        // 9) Retrieve the stable/tracked peaks and build features
-        List<Map<String, Object>> trackedPeaks = peakTracker.getTrackedPeaks();
-        Map<String, Double> featureMap = buildFeaturesFromTracker(
-                trackedPeaks,
+        // 9) Log or do something with 'stable'
+        if (!stable) {
+            logReceivedData("[processCirDataAsync] Frame was UNSTABLE -> partial reset.\n");
+        }
+
+        // 9) Build features from these stable peaks
+        //    (No need for peakTracker.getTrackedPeaks(),
+        //     since stablePeaks is already final from the tracker.)
+        Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
+                stablePeaks,
                 alignedCIR,
                 (double) dCm  // distance (optional)
         );
@@ -1026,7 +1040,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 11) Build the feature vector in the correct order for your model
-        //     (Below is an example of 15 input features. Adjust to match your training.)
         double[] featureVector = new double[] {
                 featureMap.getOrDefault("Num_Peaks", 0.0),
                 featureMap.getOrDefault("Pmax", 0.0),
@@ -1046,7 +1059,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         };
 
         // 12) Classify using the stored model
-        //     This assumes your model has a .score(...) method returning probabilities or logits
         double[] prediction = model.score(featureVector);
 
         // 13) Convert the raw prediction to a label
@@ -1056,6 +1068,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         logReceivedData("predictedLabel : " + predictedLabel + "\n");
         updateReceiveText(String.valueOf(predictedLabel));
     }
+
 
 
 
@@ -1291,137 +1304,222 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
 
-    /*************************************************************
-     * 2) PEAK TRACKING (UnboundedPeakTracker)
-     *    Mirrors the Python "UnboundedPeakTracker" class.
-     *************************************************************/
-    static public class UnboundedPeakTracker {
-        private final int tolerance;
-        private final int maxUnmatchedFrames;
-        private final boolean debug;
+    public static class UnboundedPeakTracker {
 
-        // Each item: { peak_id, index, unmatched_count }
-        private final List<Map<String, Object>> oldPeaks = new ArrayList<>();
-        private int nextPeakId = 1;
+        private static final String TAG = "UnboundedPeakTracker";
 
-        public UnboundedPeakTracker(int tolerance, int maxUnmatchedFrames, boolean debug) {
+        private final int tolerance;           // Max distance for matching old vs. new
+        private final int maxUnmatchedFrames;  // If unmatched_count > this, remove the peak
+        private final int n;                   // Check first n peaks by ascending index for instability
+        private final boolean debug;           // If true, print debug logs
+
+        private final List<Peak> oldPeaks;     // The list of stored old peaks
+        private int nextPeakId;               // Assign unique IDs to newly created peaks
+
+        // Container for storing each tracked peak
+        private static class Peak {
+            int peakId;
+            int index;
+            int unmatchedCount; // increment each frame if not matched
+
+            Peak(int peakId, int index) {
+                this.peakId = peakId;
+                this.index = index;
+                this.unmatchedCount = 0;
+            }
+
+            @Override
+            public String toString() {
+                return String.format("{peakId=%d, index=%d, unmatchedCount=%d}",
+                        peakId, index, unmatchedCount);
+            }
+        }
+
+        // Return structure (optional but convenient)
+        public static class UpdateResult {
+            private final List<Integer> finalIndices;
+            private final boolean stable;
+
+            public UpdateResult(List<Integer> finalIndices, boolean stable) {
+                this.finalIndices = finalIndices;
+                this.stable = stable;
+            }
+
+            public List<Integer> getFinalIndices() { return finalIndices; }
+            public boolean isStable() { return stable; }
+
+            @Override
+            public String toString() {
+                return String.format(
+                        "{stable=%b, finalIndices=%s}", stable, finalIndices);
+            }
+        }
+
+        public UnboundedPeakTracker(int tolerance, int maxUnmatchedFrames, int n, boolean debug) {
             this.tolerance = tolerance;
             this.maxUnmatchedFrames = maxUnmatchedFrames;
+            this.n = n;
             this.debug = debug;
+
+            this.oldPeaks = new ArrayList<>();
+            this.nextPeakId = 1;
         }
 
-        /**
-         * Update the tracker with newly detected peaks from the current frame.
-         *
-         * @param newPeaks   list of peak indices from detectPeaks()
-         * @param frameIdx   optional, for logging
-         */
-        public synchronized void update(List<Integer> newPeaks, Integer frameIdx) {
+        public void reset() {
             if (debug) {
-                Log.d("PeakTracker", String.format(
-                        "update(frame=%d), newPeaks=%s\n   oldPeaks before => %s",
-                        (frameIdx == null ? -1 : frameIdx), newPeaks, oldPeaks.toString()
-                ));
+                Log.d(TAG, "[reset()] Clearing all stored peaks.");
             }
-
-            // 1) Increment unmatched_count for all stored peaks
-            for (Map<String, Object> p : oldPeaks) {
-                int unmatchedCount = (int) p.get("unmatched_count");
-                p.put("unmatched_count", unmatchedCount + 1);
-            }
-
-            boolean[] matchedFlags = new boolean[oldPeaks.size()];
-
-            // 2) For each new peak, try to match with an existing one
-            for (int pk : newPeaks) {
-                int bestIdx = -1;
-                double bestDist = Double.MAX_VALUE;
-                for (int i = 0; i < oldPeaks.size(); i++) {
-                    Map<String, Object> oldp = oldPeaks.get(i);
-                    double dist = Math.abs(pk - (double) oldp.get("index"));
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        bestIdx = i;
-                    }
-                }
-
-                if (bestIdx >= 0 && bestDist <= tolerance) {
-                    // Matched an existing peak
-                    Map<String, Object> oldp = oldPeaks.get(bestIdx);
-                    oldp.put("index", (double) pk);
-                    oldp.put("unmatched_count", 0);
-                    matchedFlags[bestIdx] = true;
-
-                    if (debug) {
-                        Log.d("PeakTracker", String.format(
-                                "   new peak %d => matched peak_id=%s (dist=%.1f)",
-                                pk, oldp.get("peak_id"), bestDist
-                        ));
-                    }
-                } else {
-                    // No matching peak => create a new one
-                    Map<String, Object> newPeakMap = new HashMap<>();
-                    newPeakMap.put("peak_id", nextPeakId);
-                    newPeakMap.put("index", (double) pk);
-                    newPeakMap.put("unmatched_count", 0);
-                    oldPeaks.add(newPeakMap);
-
-                    // Expand matchedFlags array
-                    boolean[] newMatched = new boolean[matchedFlags.length + 1];
-                    System.arraycopy(matchedFlags, 0, newMatched, 0, matchedFlags.length);
-                    newMatched[matchedFlags.length] = true;
-                    matchedFlags = newMatched;
-
-                    if (debug) {
-                        Log.d("PeakTracker", String.format(
-                                "   new peak %d => created new_id=%d", pk, nextPeakId
-                        ));
-                    }
-                    nextPeakId++;
-                }
-            }
-
-            // 3) Remove peaks that have been unmatched for too many frames
-            List<Integer> removeIndices = new ArrayList<>();
-            for (int i = 0; i < oldPeaks.size(); i++) {
-                Map<String, Object> oldp = oldPeaks.get(i);
-                int unmatchedCount = (int) oldp.get("unmatched_count");
-                if (unmatchedCount > maxUnmatchedFrames) {
-                    removeIndices.add(i);
-                }
-            }
-            // Remove from the end
-            Collections.sort(removeIndices, Collections.reverseOrder());
-            for (int index : removeIndices) {
-                if (debug) {
-                    Map<String, Object> removed = oldPeaks.get(index);
-                    Log.d("PeakTracker", String.format(
-                            "   removing old peak_id=%s for unmatched_count=%d",
-                            removed.get("peak_id"), removed.get("unmatched_count")
-                    ));
-                }
-                oldPeaks.remove(index);
-            }
-
-            if (debug) {
-                Log.d("PeakTracker", "   oldPeaks after => " + oldPeaks.toString());
-            }
-        }
-
-        /**
-         * Resets the tracker (e.g., if seat label or condition changes).
-         */
-        public synchronized void reset() {
             oldPeaks.clear();
             nextPeakId = 1;
         }
 
         /**
-         * Returns the currently stored (tracked) peaks, so that
-         * feature extraction can consider unmatched older peaks as well.
+         * Updates the tracker with new peaks (by index).  We do the python-like approach:
+         *   • increment unmatched_count for old peaks
+         *   • for each new index, match or create new
+         *   • remove stale peaks
+         *   • sort by index, find top n => count unmatched + newly created
+         *   • if total > 1 => unstable => remove unmatched
+         * @param newPeakIndices Detected peaks in the current frame
+         * @return UpdateResult(finalIndices, stable)
          */
-        public synchronized List<Map<String, Object>> getTrackedPeaks() {
-            return oldPeaks;
+        public UpdateResult update(List<Integer> newPeakIndices) {
+            if (debug) {
+                Log.d(TAG, String.format("\n[update()] newPeaks=%s\noldPeaks(before)=%s",
+                        newPeakIndices, oldPeaks));
+            }
+
+            // 1) Increment unmatched_count
+            for (Peak op : oldPeaks) {
+                op.unmatchedCount++;
+            }
+
+            // We'll track which indexes are "new" so we can see if they're in top n
+            List<Integer> newlyCreatedIndices = new ArrayList<>();
+
+            // 2) Cross-order matching
+            for (int newIdx : newPeakIndices) {
+                int bestIndex = -1;
+                int bestDist = Integer.MAX_VALUE;
+                for (int i = 0; i < oldPeaks.size(); i++) {
+                    Peak op = oldPeaks.get(i);
+                    int dist = Math.abs(newIdx - op.index);
+                    if (dist <= tolerance && dist < bestDist) {
+                        bestDist = dist;
+                        bestIndex = i;
+                    }
+                }
+
+                if (bestIndex >= 0) {
+                    // matched
+                    Peak matched = oldPeaks.get(bestIndex);
+                    matched.index = newIdx;
+                    matched.unmatchedCount = 0;
+                    if (debug) {
+                        Log.d(TAG, String.format("   [MATCHED] newPeak=%d => oldPeakId=%d (dist=%d)",
+                                newIdx, matched.peakId, bestDist));
+                    }
+                } else {
+                    // new peak
+                    Peak newPeak = new Peak(nextPeakId, newIdx);
+                    nextPeakId++;
+                    oldPeaks.add(newPeak);
+                    newlyCreatedIndices.add(newIdx);
+
+                    if (debug) {
+                        Log.d(TAG, String.format("   [NEW] Peak %d => peakId=%d", newIdx, newPeak.peakId));
+                    }
+                }
+            }
+
+            // 3) Remove stale peaks
+            List<Integer> staleIndices = new ArrayList<>();
+            for (int i = 0; i < oldPeaks.size(); i++) {
+                if (oldPeaks.get(i).unmatchedCount > maxUnmatchedFrames) {
+                    staleIndices.add(i);
+                }
+            }
+            for (int i = staleIndices.size() - 1; i >= 0; i--) {
+                int idx = staleIndices.get(i);
+                if (debug) {
+                    Log.d(TAG, String.format("   [STALE] Removing oldPeakId=%d, unmatchedCount=%d",
+                            oldPeaks.get(idx).peakId, oldPeaks.get(idx).unmatchedCount));
+                }
+                oldPeaks.remove(idx);
+            }
+
+            // 4) Sort old_peaks by ascending index
+            oldPeaks.sort(Comparator.comparingInt(p -> p.index));
+
+            // 5) Count unmatched_in_top_n + new_in_top_n
+            boolean unstable = false;
+            if (!oldPeaks.isEmpty()) {
+                int count = Math.min(n, oldPeaks.size());
+                int unmatchedInTopN = 0;
+                // gather the top-n's indexes for counting new
+                List<Integer> topNindexes = new ArrayList<>();
+
+                for (int i = 0; i < count; i++) {
+                    topNindexes.add(oldPeaks.get(i).index);
+                    if (oldPeaks.get(i).unmatchedCount > 0) {
+                        unmatchedInTopN++;
+                    }
+                }
+
+                // count how many newlyCreated indices appear in top-n
+                int newPeaksInTopN = 0;
+                for (Integer newCreatedIdx : newlyCreatedIndices) {
+                    if (topNindexes.contains(newCreatedIdx)) {
+                        newPeaksInTopN++;
+                    }
+                }
+
+                int totalUnstablePeaks = unmatchedInTopN + newPeaksInTopN;
+                if (debug) {
+                    Log.d(TAG, String.format(
+                            "   [DEBUG] unmatchedInTopN=%d, newPeaksInTopN=%d => total=%d",
+                            unmatchedInTopN, newPeaksInTopN, totalUnstablePeaks));
+                }
+
+                if (totalUnstablePeaks > 1) {
+                    unstable = true;
+                    if (debug) {
+                        Log.d(TAG, String.format(
+                                "   [UNSTABLE] %d (unmatched + new) in top %d => partial removal of unmatched peaks.",
+                                totalUnstablePeaks, n));
+                    }
+
+                    // remove only unmatched
+                    List<Peak> retained = new ArrayList<>();
+                    for (Peak op : oldPeaks) {
+                        if (op.unmatchedCount == 0) {
+                            retained.add(op);
+                        } else {
+                            if (debug) {
+                                Log.d(TAG, String.format(
+                                        "   -> Removing unmatched oldPeakId=%d, index=%d",
+                                        op.peakId, op.index));
+                            }
+                        }
+                    }
+                    oldPeaks.clear();
+                    oldPeaks.addAll(retained);
+                }
+            }
+
+            // 6) finalIndices
+            List<Integer> finalIndices = new ArrayList<>();
+            for (Peak pk : oldPeaks) {
+                finalIndices.add(pk.index);
+            }
+
+            boolean stable = !unstable;
+            if (debug) {
+                Log.d(TAG, String.format(
+                        "   [DONE] stable=%b, oldPeaks(after)=%s, finalIndices=%s",
+                        stable, oldPeaks, finalIndices));
+            }
+            return new UpdateResult(finalIndices, stable);
         }
     }
 
@@ -1430,49 +1528,28 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
 
 
+
+
     /**
-     * Example: builds seat-localization features from the tracked peaks
-     * so the logic matches the Python "build_features_including_unmatched()".
-     */
-    /**
-     * Updated method to build seat-localization features from the tracked peaks,
-     * ensuring the final Map includes keys in the same order used by Python.
+     * Build feature map from a list of stable peak indices in the aligned CIR array.
+     * This replicates the Python logic for computing peak-based features.
      *
-     * Order of keys:
-     *  1. Num_Peaks
-     *  2. Pmax
-     *  3. Tmax
-     *  4. P_pos_ratio_1
-     *  5. P_power_ratio_1
-     *  6. T_pos_distance_1
-     *  7. T_power_distance_1
-     *  8. P_pos_ratio_2
-     *  9. P_power_ratio_2
-     * 10. T_pos_distance_2
-     * 11. T_power_distance_2
-     * 12. P_pos_ratio_3
-     * 13. P_power_ratio_3
-     * 14. T_pos_distance_3
-     * 15. T_power_distance_3
-     * 16. Label        (optional in real-time)
-     * 17. GroundTruth  (optional in real-time)
-     * 18. DistanceBin  (optional in real-time)
-     *
-     * Note: In a real-time Android app, "Label", "GroundTruth", and "DistanceBin"
-     * are often unknown. They are primarily for offline or debugging usage.
-     * If you still wish to store them, pass them as method parameters (or set them to defaults).
+     * @param stablePeaks A list of final stable peak indices (e.g., from peakTracker.update(...))
+     * @param alignedCIR   The CIR magnitude array after upsampling and alignment
+     * @param distanceBin  (Optional) a distance measurement or bin ID. Pass null if unavailable.
+     * @return A map of feature names to values, e.g. "Num_Peaks", "Pmax", ...
+     *         Returns an empty or default-filled map if no stable peaks are available.
      */
-    private Map<String, Double> buildFeaturesFromTracker(
-            List<Map<String, Object>> trackedPeaks,
+    private Map<String, Double> buildFeaturesFromStablePeaks(
+            List<Integer> stablePeaks,
             double[] alignedCIR,
-            Double distanceBin    // can be null if unknown in real-time
+            Double distanceBin
     ) {
-        // Using LinkedHashMap preserves insertion order, matching the Python column order.
+        // Using LinkedHashMap preserves a consistent insertion order (like Python).
         Map<String, Double> feats = new LinkedHashMap<>();
 
-        // 1) Count valid peaks (similar to Python).
-        if (trackedPeaks.isEmpty()) {
-            // If no peaks, fill default placeholders in correct order:
+        // 1) If no peaks, fill default placeholders
+        if (stablePeaks == null || stablePeaks.isEmpty()) {
             feats.put("Num_Peaks", 0.0);
             feats.put("Pmax", 0.0);
             feats.put("Tmax", 0.0);
@@ -1492,25 +1569,26 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             feats.put("T_pos_distance_3", 0.0);
             feats.put("T_power_distance_3", 0.0);
 
-            // Optional fields:
-            feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+            // Optional field(s)
+            feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
 
             return feats;
         }
 
-        // Convert tracked peak indices + amplitudes
-        List<Integer> peakIndices = new ArrayList<>();
-        List<Double> peakAmps = new ArrayList<>();
-        for (Map<String, Object> pk : trackedPeaks) {
-            int idx = (int) Math.round((double) pk.get("index"));
+        // 2) Gather the indices + amplitudes from the alignedCIR
+        //    (Ensure each index is valid)
+        List<Integer> validIndices = new ArrayList<>();
+        List<Double> validAmps = new ArrayList<>();
+
+        for (Integer idx : stablePeaks) {
             if (idx >= 0 && idx < alignedCIR.length) {
-                peakIndices.add(idx);
-                peakAmps.add(alignedCIR[idx]);
+                validIndices.add(idx);
+                validAmps.add(alignedCIR[idx]);
             }
         }
 
-        // If all tracked peaks are out of range, treat as no peaks
-        if (peakIndices.isEmpty()) {
+        // If all stablePeaks were out of range, treat as no peaks
+        if (validIndices.isEmpty()) {
             feats.put("Num_Peaks", 0.0);
             feats.put("Pmax", 0.0);
             feats.put("Tmax", 0.0);
@@ -1530,57 +1608,61 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             feats.put("T_pos_distance_3", 0.0);
             feats.put("T_power_distance_3", 0.0);
 
-            // Optional fields:
-            feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
-
+            feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
             return feats;
         }
 
-        // Convert to arrays for sorting
-        int n = peakIndices.size();
+        // 3) Build arrays for easier sorting
+        int n = validIndices.size();
         int[] idxArray = new int[n];
         double[] ampArray = new double[n];
         for (int i = 0; i < n; i++) {
-            idxArray[i] = peakIndices.get(i);
-            ampArray[i] = peakAmps.get(i);
+            idxArray[i] = validIndices.get(i);
+            ampArray[i] = validAmps.get(i);
         }
 
-        // Num_Peaks
+        // 4) Basic feature: number of peaks
         feats.put("Num_Peaks", (double) n);
 
-        // Find max amplitude
+        // 5) Find max amplitude + index
         int idxMax = argMax(ampArray);
         double pmax = ampArray[idxMax];
-        double tmax = idxArray[idxMax]; // index of that max peak
+        double tmax = idxArray[idxMax];
         feats.put("Pmax", pmax);
         feats.put("Tmax", tmax);
 
-        // Sort peaks by position (ascending) and by amplitude (descending)
-        int[] sortedByPosition = sortIndicesByValues(idxArray);
-        int[] sortedByAmplitude = sortIndicesByValuesDescending(ampArray);
+        // 6) Sort by position (ascending) and by amplitude (descending) for ratio calculations
+        int[] sortedByPosition = sortIndicesByValues(idxArray);          // ascending
+        int[] sortedByAmplitude = sortIndicesByValuesDescending(ampArray); // descending
 
-        // We'll compute up to p=4 -> 3 ratio sets
-        int p = 4;
-        List<Double> pPosRatios = new ArrayList<>();
-        List<Double> pPowRatios = new ArrayList<>();
-        List<Double> tPosDistances = new ArrayList<>();
-        List<Double> tPowDistances = new ArrayList<>();
+        // 7) We'll fill up to p=4 => 3 ratio sets
+        final int p = 4;
+        List<Double> pPosRatios   = new ArrayList<>();
+        List<Double> pPowRatios   = new ArrayList<>();
+        List<Double> tPosDistances= new ArrayList<>();
+        List<Double> tPowDistances= new ArrayList<>();
 
         if (n > 1) {
             int numRatios = Math.min(p - 1, n - 1);
 
-            // Position-based
+            // (A) Position-based comparisons
+            // Compare each subsequent peak to the first peak by position
             for (int j = 1; j <= numRatios; j++) {
-                double ratio = ampArray[sortedByPosition[0]] / ampArray[sortedByPosition[j]];
+                double denomAmp = ampArray[sortedByPosition[j]];
+                double numerAmp = ampArray[sortedByPosition[0]];
+                double ratio = (denomAmp != 0.0) ? (numerAmp / denomAmp) : 1.0;
                 pPosRatios.add(ratio);
 
                 double dist = idxArray[sortedByPosition[j]] - idxArray[sortedByPosition[0]];
                 tPosDistances.add(dist);
             }
 
-            // Amplitude-based
+            // (B) Amplitude-based comparisons
+            // Compare each subsequent peak to the highest amplitude peak
             for (int j = 1; j <= numRatios; j++) {
-                double ratio = ampArray[sortedByAmplitude[0]] / ampArray[sortedByAmplitude[j]];
+                double denomAmp = ampArray[sortedByAmplitude[j]];
+                double numerAmp = ampArray[sortedByAmplitude[0]];
+                double ratio = (denomAmp != 0.0) ? (numerAmp / denomAmp) : 1.0;
                 pPowRatios.add(ratio);
 
                 double dist = idxArray[sortedByAmplitude[j]] - idxArray[sortedByAmplitude[0]];
@@ -1588,13 +1670,13 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             }
         }
 
-        // Ensure we have 3 entries
-        while (pPosRatios.size() < 3) pPosRatios.add(1.0);
-        while (tPosDistances.size() < 3) tPosDistances.add(0.0);
-        while (pPowRatios.size() < 3) pPowRatios.add(1.0);
-        while (tPowDistances.size() < 3) tPowDistances.add(0.0);
+        // 8) Ensure we have 3 entries for each
+        while (pPosRatios.size() < 3)      pPosRatios.add(1.0);
+        while (tPosDistances.size() < 3)   tPosDistances.add(0.0);
+        while (pPowRatios.size() < 3)      pPowRatios.add(1.0);
+        while (tPowDistances.size() < 3)   tPowDistances.add(0.0);
 
-        // Put them in order:
+        // 9) Insert them into the feature map
         feats.put("P_pos_ratio_1", pPosRatios.get(0));
         feats.put("P_power_ratio_1", pPowRatios.get(0));
         feats.put("T_pos_distance_1", tPosDistances.get(0));
@@ -1610,12 +1692,12 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         feats.put("T_pos_distance_3", tPosDistances.get(2));
         feats.put("T_power_distance_3", tPowDistances.get(2));
 
-        // Optional fields: "Label", "GroundTruth", "DistanceBin"
-        // For real-time usage, you may skip or default them.
-        feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+        // 10) Optional fields: e.g. "DistanceBin"
+        feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
 
         return feats;
     }
+
 
 
     private int argMax(double[] arr) {

@@ -159,17 +159,20 @@ public class TestFragment extends Fragment {
 
 
         // 2) Prepare logging of results
+        // 2) Prepare logging of results
         StringBuilder results = new StringBuilder();
-        // We can reuse the same UnboundedPeakTracker as if we were processing frames in real-time
+
+// We can reuse the same UnboundedPeakTracker as if processing frames in real-time
         TerminalFragment.UnboundedPeakTracker realTimeTracker = new TerminalFragment.UnboundedPeakTracker(
-                100,   // tolerance
-                5,    // maxUnmatchedFrames
-                true  // debug
+                90,   // tolerance
+                5,     // maxUnmatchedFrames
+                4,     // top-n to check, for example
+                true   // debug
         );
 
-        // 3) Process each of the five CIR frames sequentially
+// 3) Process each of the five CIR frames sequentially
         int upsampleFactor = 64;
-        int minDistance = 100;
+        int minDistance = 90;
         double amplitudeThreshold = 220.0;
         int frameIndex = 0;
 
@@ -193,10 +196,11 @@ public class TestFragment extends Fragment {
             }
 
             // Compute magnitude
-            double[] cirMagnitude = new double[cirRealValues.length];
+            double[] cirMagnitude = new double[cirRealArray.length];
             for (int i = 0; i < cirRealArray.length; i++) {
-                cirMagnitude[i] = Math.sqrt(cirRealArray[i]*cirRealArray[i]
-                        + cirImagArray[i]*cirImagArray[i]);
+                cirMagnitude[i] = Math.sqrt(
+                        cirRealArray[i]*cirRealArray[i] + cirImagArray[i]*cirImagArray[i]
+                );
             }
 
             // =============== Step B: UPSAMPLE & ALIGN ===============
@@ -214,19 +218,25 @@ public class TestFragment extends Fragment {
                     minDistance,
                     false // debug
             );
-            // Update tracker => multi-frame continuity
-            realTimeTracker.update(framePeaks, frameIndex);
+
+            // The new 'update(...)' returns a list of stable peaks directly
+            TerminalFragment.UnboundedPeakTracker.UpdateResult updateResult = realTimeTracker.update(framePeaks);
+            List<Integer> stablePeaks = updateResult.getFinalIndices();
+            boolean stable = updateResult.isStable();
+
             t2 = System.nanoTime();
             double peakDetectionTimeMs = (t2 - t1) / 1.0e6;
 
             // =============== Step D: FEATURE EXTRACTION ===============
             t1 = System.nanoTime();
-            List<Map<String, Object>> stablePeaks = realTimeTracker.getTrackedPeaks();
-            Map<String, Double> featureMap = buildFeaturesFromTracker(
+
+            // Build features from the stable peak indices
+            Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
                     stablePeaks,
                     alignedCIR,
-                    /* distanceBin= */ (double) dCm  // If you want to store distance as "DistanceBin"
+                    (double) dCm  // e.g. store distance as "DistanceBin"
             );
+
             t2 = System.nanoTime();
             double featureExtractionTimeMs = (t2 - t1) / 1.0e6;
 
@@ -242,15 +252,16 @@ public class TestFragment extends Fragment {
                     .append("\n   FeatExtract:    ").append(String.format("%.3f ms", featureExtractionTimeMs))
                     .append("\n   TOTAL Frame:    ").append(String.format("%.3f ms", totalFrameTimeMs))
                     .append("\n   framePeaks: ").append(framePeaks)
-                    .append("\n   finalPeaks: ").append(stablePeaks)
+                    .append("\n   stablePeaks: ").append(stablePeaks)
                     .append("\n   FeatureMap: ").append(featureMap.toString())
                     .append("\n");
 
             frameIndex++;
         }
 
-        // Finally, present all results in textView or logs
+// Finally, present all results in textView or logs
         textViewTestResults.setText(results.toString());
+
     }
 
     /**
@@ -274,15 +285,18 @@ public class TestFragment extends Fragment {
             int minDistance,
             boolean debug
     ) {
-        // Step A: local maxima
+        // Step A: local maxima above amplitudeThreshold
         List<Integer> rawPeaks = new ArrayList<>();
         for (int i = 1; i < data.length - 1; i++) {
             if (data[i] > amplitudeThreshold && data[i] > data[i - 1] && data[i] > data[i + 1]) {
                 rawPeaks.add(i);
             }
         }
-        // Step B: minDistance filter
+
+        // Step B: sort raw peaks by amplitude (descending)
         rawPeaks.sort((p1, p2) -> Double.compare(data[p2], data[p1]));
+
+        // Step C: minDistance filter, picking largest amplitude first
         List<Integer> filtered = new ArrayList<>();
         boolean[] removed = new boolean[data.length];
         for (int peakIdx : rawPeaks) {
@@ -293,16 +307,21 @@ public class TestFragment extends Fragment {
                 for (int j = start; j <= end; j++) {
                     removed[j] = true;
                 }
+                // The code sets removed[peakIdx] = false, meaning "don't remove the peak itself"
                 removed[peakIdx] = false;
             }
         }
+
+        // Step D: sort final by ascending index
         filtered.sort(Integer::compareTo);
+
         if (debug) {
             Log.d("detectPeaksLocalMax", String.format(
                     "rawPeaks=%d, finalPeaks=%d", rawPeaks.size(), filtered.size()));
         }
         return filtered;
     }
+
     private double[] alignCir(double[] resampledMagnitude, double firstPathIndex) {
         int upsampleFactor = 64;
         int adjustedIndex = (int) Math.round((firstPathIndex - 801 + 70) * upsampleFactor);
@@ -326,17 +345,16 @@ public class TestFragment extends Fragment {
     }
 // The rest of the methods (hexToFixedPoint, alignCir, resampleFFT, buildFeaturesFromTracker, etc.)
 // remain as previously defined or updated in your code.
-private Map<String, Double> buildFeaturesFromTracker(
-        List<Map<String, Object>> trackedPeaks,
+private Map<String, Double> buildFeaturesFromStablePeaks(
+        List<Integer> stablePeaks,
         double[] alignedCIR,
-        Double distanceBin    // can be null if unknown in real-time
+        Double distanceBin
 ) {
-    // Using LinkedHashMap preserves insertion order, matching the Python column order.
+    // Using LinkedHashMap preserves a consistent insertion order (like Python).
     Map<String, Double> feats = new LinkedHashMap<>();
 
-    // 1) Count valid peaks (similar to Python).
-    if (trackedPeaks.isEmpty()) {
-        // If no peaks, fill default placeholders in correct order:
+    // 1) If no peaks, fill default placeholders
+    if (stablePeaks == null || stablePeaks.isEmpty()) {
         feats.put("Num_Peaks", 0.0);
         feats.put("Pmax", 0.0);
         feats.put("Tmax", 0.0);
@@ -356,25 +374,26 @@ private Map<String, Double> buildFeaturesFromTracker(
         feats.put("T_pos_distance_3", 0.0);
         feats.put("T_power_distance_3", 0.0);
 
-        // Optional fields:
-        feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+        // Optional field(s)
+        feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
 
         return feats;
     }
 
-    // Convert tracked peak indices + amplitudes
-    List<Integer> peakIndices = new ArrayList<>();
-    List<Double> peakAmps = new ArrayList<>();
-    for (Map<String, Object> pk : trackedPeaks) {
-        int idx = (int) Math.round((double) pk.get("index"));
+    // 2) Gather the indices + amplitudes from the alignedCIR
+    //    (Ensure each index is valid)
+    List<Integer> validIndices = new ArrayList<>();
+    List<Double> validAmps = new ArrayList<>();
+
+    for (Integer idx : stablePeaks) {
         if (idx >= 0 && idx < alignedCIR.length) {
-            peakIndices.add(idx);
-            peakAmps.add(alignedCIR[idx]);
+            validIndices.add(idx);
+            validAmps.add(alignedCIR[idx]);
         }
     }
 
-    // If all tracked peaks are out of range, treat as no peaks
-    if (peakIndices.isEmpty()) {
+    // If all stablePeaks were out of range, treat as no peaks
+    if (validIndices.isEmpty()) {
         feats.put("Num_Peaks", 0.0);
         feats.put("Pmax", 0.0);
         feats.put("Tmax", 0.0);
@@ -394,57 +413,61 @@ private Map<String, Double> buildFeaturesFromTracker(
         feats.put("T_pos_distance_3", 0.0);
         feats.put("T_power_distance_3", 0.0);
 
-        // Optional fields:
-        feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
-
+        feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
         return feats;
     }
 
-    // Convert to arrays for sorting
-    int n = peakIndices.size();
+    // 3) Build arrays for easier sorting
+    int n = validIndices.size();
     int[] idxArray = new int[n];
     double[] ampArray = new double[n];
     for (int i = 0; i < n; i++) {
-        idxArray[i] = peakIndices.get(i);
-        ampArray[i] = peakAmps.get(i);
+        idxArray[i] = validIndices.get(i);
+        ampArray[i] = validAmps.get(i);
     }
 
-    // Num_Peaks
+    // 4) Basic feature: number of peaks
     feats.put("Num_Peaks", (double) n);
 
-    // Find max amplitude
+    // 5) Find max amplitude + index
     int idxMax = argMax(ampArray);
     double pmax = ampArray[idxMax];
-    double tmax = idxArray[idxMax]; // index of that max peak
+    double tmax = idxArray[idxMax];
     feats.put("Pmax", pmax);
     feats.put("Tmax", tmax);
 
-    // Sort peaks by position (ascending) and by amplitude (descending)
-    int[] sortedByPosition = sortIndicesByValues(idxArray);
-    int[] sortedByAmplitude = sortIndicesByValuesDescending(ampArray);
+    // 6) Sort by position (ascending) and by amplitude (descending) for ratio calculations
+    int[] sortedByPosition = sortIndicesByValues(idxArray);          // ascending
+    int[] sortedByAmplitude = sortIndicesByValuesDescending(ampArray); // descending
 
-    // We'll compute up to p=4 -> 3 ratio sets
-    int p = 4;
-    List<Double> pPosRatios = new ArrayList<>();
-    List<Double> pPowRatios = new ArrayList<>();
-    List<Double> tPosDistances = new ArrayList<>();
-    List<Double> tPowDistances = new ArrayList<>();
+    // 7) We'll fill up to p=4 => 3 ratio sets
+    final int p = 4;
+    List<Double> pPosRatios   = new ArrayList<>();
+    List<Double> pPowRatios   = new ArrayList<>();
+    List<Double> tPosDistances= new ArrayList<>();
+    List<Double> tPowDistances= new ArrayList<>();
 
     if (n > 1) {
         int numRatios = Math.min(p - 1, n - 1);
 
-        // Position-based
+        // (A) Position-based comparisons
+        // Compare each subsequent peak to the first peak by position
         for (int j = 1; j <= numRatios; j++) {
-            double ratio = ampArray[sortedByPosition[0]] / ampArray[sortedByPosition[j]];
+            double denomAmp = ampArray[sortedByPosition[j]];
+            double numerAmp = ampArray[sortedByPosition[0]];
+            double ratio = (denomAmp != 0.0) ? (numerAmp / denomAmp) : 1.0;
             pPosRatios.add(ratio);
 
             double dist = idxArray[sortedByPosition[j]] - idxArray[sortedByPosition[0]];
             tPosDistances.add(dist);
         }
 
-        // Amplitude-based
+        // (B) Amplitude-based comparisons
+        // Compare each subsequent peak to the highest amplitude peak
         for (int j = 1; j <= numRatios; j++) {
-            double ratio = ampArray[sortedByAmplitude[0]] / ampArray[sortedByAmplitude[j]];
+            double denomAmp = ampArray[sortedByAmplitude[j]];
+            double numerAmp = ampArray[sortedByAmplitude[0]];
+            double ratio = (denomAmp != 0.0) ? (numerAmp / denomAmp) : 1.0;
             pPowRatios.add(ratio);
 
             double dist = idxArray[sortedByAmplitude[j]] - idxArray[sortedByAmplitude[0]];
@@ -452,13 +475,13 @@ private Map<String, Double> buildFeaturesFromTracker(
         }
     }
 
-    // Ensure we have 3 entries
-    while (pPosRatios.size() < 3) pPosRatios.add(1.0);
-    while (tPosDistances.size() < 3) tPosDistances.add(0.0);
-    while (pPowRatios.size() < 3) pPowRatios.add(1.0);
-    while (tPowDistances.size() < 3) tPowDistances.add(0.0);
+    // 8) Ensure we have 3 entries for each
+    while (pPosRatios.size() < 3)      pPosRatios.add(1.0);
+    while (tPosDistances.size() < 3)   tPosDistances.add(0.0);
+    while (pPowRatios.size() < 3)      pPowRatios.add(1.0);
+    while (tPowDistances.size() < 3)   tPowDistances.add(0.0);
 
-    // Put them in order:
+    // 9) Insert them into the feature map
     feats.put("P_pos_ratio_1", pPosRatios.get(0));
     feats.put("P_power_ratio_1", pPowRatios.get(0));
     feats.put("T_pos_distance_1", tPosDistances.get(0));
@@ -474,9 +497,8 @@ private Map<String, Double> buildFeaturesFromTracker(
     feats.put("T_pos_distance_3", tPosDistances.get(2));
     feats.put("T_power_distance_3", tPowDistances.get(2));
 
-    // Optional fields: "Label", "GroundTruth", "DistanceBin"
-    // For real-time usage, you may skip or default them.
-    feats.put("DistanceBin", distanceBin != null ? distanceBin : Double.NaN);
+    // 10) Optional fields: e.g. "DistanceBin"
+    feats.put("DistanceBin", (distanceBin != null) ? distanceBin : Double.NaN);
 
     return feats;
 }
