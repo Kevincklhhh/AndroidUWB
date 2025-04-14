@@ -561,7 +561,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        uwbHandler.postDelayed(stopUwbRunnable, 5000);
+        //uwbHandler.postDelayed(stopUwbRunnable, 5000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -831,7 +831,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     pendingNewline = msg.charAt(msg.length() - 1) == '\r';
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
-                logReceivedData(msg);
+                //logReceivedData(msg);
                 String receivedString = new String(data, StandardCharsets.UTF_8);
                 synchronized (dataBuffer) {
                     dataBuffer.append(receivedString);
@@ -843,8 +843,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 }
 
             }
-            String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
-            logReceivedData(logEntry);
+//            String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
+//            logReceivedData(logEntry);
             // Process the received data
         }
         //receiveText.append(spn);
@@ -880,7 +880,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void processCompleteMessage(String message) {
-        logReceivedData("CIR data raw msg: " + message + "\n");
+        //logReceivedData("CIR data raw msg: " + message + "\n");
         // Initialize variables
         String fpIndex = null;
         List<Integer> cirRealValues = new ArrayList<>();
@@ -1021,10 +1021,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         List<Integer> stablePeaks = updateResult.getFinalIndices();
         boolean stable = updateResult.isStable();
 
-        // 9) Log or do something with 'stable'
-        if (!stable) {
-            logReceivedData("[processCirDataAsync] Frame was UNSTABLE -> partial reset.\n");
-        }
 
         // 9) Build features from these stable peaks
         //    (No need for peakTracker.getTrackedPeaks(),
@@ -1074,8 +1070,11 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         String seatCategory = Integer.toString(predictedIndex);  // as defined below
 
 // 4) Logging or display
-        logReceivedData("predictedCategory : " + seatCategory + "\n");
+        logReceivedData("predictedCategory : " + seatCategory + "stable : "+ stable +"\n");
         updateReceiveText(seatCategory);
+        long receiveTimestamp = System.currentTimeMillis();
+        String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">\n";
+        logReceivedData(logEntry);
     }
 
 
