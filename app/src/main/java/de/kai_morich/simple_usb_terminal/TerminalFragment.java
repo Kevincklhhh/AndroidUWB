@@ -561,7 +561,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        //uwbHandler.postDelayed(stopUwbRunnable, 5000);
+        uwbHandler.postDelayed(stopUwbRunnable, 5000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -764,8 +764,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             long sendTimestamp = System.currentTimeMillis(); // You can use System.nanoTime() for higher resolution if needed
 
             // Log the timestamp and the sent command to the log file
-//            String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
-//            logReceivedData(logEntry);
+            String logEntry = "SEND TIMESTAMP: " + sendTimestamp + ", COMMAND: " + str + "\n";
+            logReceivedData(logEntry);
             SpannableStringBuilder spn = new SpannableStringBuilder(msg + '\n');
             spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             receiveText.append(spn);
