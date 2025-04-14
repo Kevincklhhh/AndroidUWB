@@ -503,7 +503,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 3) Check thresholds: if maxGyro, accelerometer std, and net displacement all exceed their thresholds.
-        if (maxGyro > 2.0f ) {
+        if (maxGyro > 2.6f ) {
 
             String message = String.format(
                     "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m",
@@ -556,7 +556,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         isUwbActive = true;
 //        updateReceiveText("UWB ranging activated.");
 //        logIMUData("UWB ranging activated.\n");
-        send("initf 4 9600");
+        //send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
         uwbHandler.postDelayed(stopUwbRunnable, 1000);
@@ -567,7 +567,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         public void run() {
             isUwbActive = false;
             updateReceiveText("UWB ranging stopped; resuming IMU detection.");
-            send("stop");
+            //send("stop");
             // Optionally, re-register sensors if needed.
         }
     };
@@ -830,22 +830,22 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
                 logReceivedData(msg);
-//                String receivedString = new String(data, StandardCharsets.UTF_8);
-//                synchronized (dataBuffer) {
-//                    dataBuffer.append(receivedString);
-//                }
-//                if (receivedString.contains("!")) {
-//                    // Process the data in the buffer
-//                    //enterIdleStateFromUwb();
-//                    processDataBuffer();
-//                }
+                String receivedString = new String(data, StandardCharsets.UTF_8);
+                synchronized (dataBuffer) {
+                    dataBuffer.append(receivedString);
+                }
+                if (receivedString.contains("!")) {
+                    // Process the data in the buffer
+                    //enterIdleStateFromUwb();
+                    processDataBuffer();
+                }
 
             }
             String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">";
             logReceivedData(logEntry);
             // Process the received data
         }
-        receiveText.append(spn);
+        //receiveText.append(spn);
     }
     private void processDataBuffer() {
         synchronized (dataBuffer) {
@@ -971,7 +971,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             90,   // tolerance
             5,     // maxUnmatchedFrames
             4,     // top-n to check, for example
-            true   // debug
+            false   // debug
     );
     private void processCirDataAsync(Map<String, Object> cirData) {
         // 1) Parse raw data from the Map
@@ -1032,7 +1032,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 alignedCIR,
                 (double) dCm  // distance (optional)
         );
-
+//
         // 10) If featureMap is null or incomplete, skip classification
         if (featureMap == null || featureMap.isEmpty()) {
             logReceivedData("No valid features extracted; skipping classification.\n");
@@ -1040,6 +1040,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 11) Build the feature vector in the correct order for your model
+        // Step ... we assume we already have `stablePeaks`, `alignedCIR`, etc.
+// 1) Build the feature vector
         double[] featureVector = new double[] {
                 featureMap.getOrDefault("Num_Peaks", 0.0),
                 featureMap.getOrDefault("Pmax", 0.0),
@@ -1055,21 +1057,35 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 featureMap.getOrDefault("P_pos_ratio_3", 1.0),
                 featureMap.getOrDefault("P_power_ratio_3", 1.0),
                 featureMap.getOrDefault("T_pos_distance_3", 0.0),
-                featureMap.getOrDefault("T_power_distance_3", 0.0)
+                featureMap.getOrDefault("T_power_distance_3", 0.0),
+                featureMap.getOrDefault("DistanceBin", 0.0)
+
         };
 
-        // 12) Classify using the stored model
+// 2) Score the feature vector using the m2cgen-generated RandomForestClassifier
         double[] prediction = model.score(featureVector);
+//
+// 3) Convert numeric output to class index
+        int predictedIndex = argMax(prediction);
 
-        // 13) Convert the raw prediction to a label
-        int predictedLabel = argMax(prediction);
+// 3) Hardcode numeric -> "driver"/"passenger"
+        String seatCategory = Integer.toString(predictedIndex);  // as defined below
 
-        // 14) Logging & UI output
-        logReceivedData("predictedLabel : " + predictedLabel + "\n");
-        updateReceiveText(String.valueOf(predictedLabel));
+// 4) Logging or display
+        logReceivedData("predictedCategory : " + seatCategory + "\n");
+        updateReceiveText(seatCategory);
     }
 
 
+
+    private String interpretLabel(int predictedIndex) {
+        // If 0..7 => driver, else passenger
+        if (predictedIndex <= 7) {
+            return "driver";
+        } else {
+            return "passenger";
+        }
+    }
 
 
     /**

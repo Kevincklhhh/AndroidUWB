@@ -242,6 +242,34 @@ public class TestFragment extends Fragment {
 
             long frameEnd = System.nanoTime();
             double totalFrameTimeMs = (frameEnd - frameStart) / 1.0e6;
+            if (featureMap == null || featureMap.isEmpty()) {
+                return;
+            }
+
+            // 11) Build the feature vector in the correct order for your model
+            // Step ... we assume we already have `stablePeaks`, `alignedCIR`, etc.
+            double[] featureVector = new double[] {
+                    featureMap.getOrDefault("Num_Peaks", 0.0),
+                    featureMap.getOrDefault("Pmax", 0.0),
+                    featureMap.getOrDefault("Tmax", 0.0),
+                    featureMap.getOrDefault("P_pos_ratio_1", 1.0),
+                    featureMap.getOrDefault("P_power_ratio_1", 1.0),
+                    featureMap.getOrDefault("T_pos_distance_1", 0.0),
+                    featureMap.getOrDefault("T_power_distance_1", 0.0),
+                    featureMap.getOrDefault("P_pos_ratio_2", 1.0),
+                    featureMap.getOrDefault("P_power_ratio_2", 1.0),
+                    featureMap.getOrDefault("T_pos_distance_2", 0.0),
+                    featureMap.getOrDefault("T_power_distance_2", 0.0),
+                    featureMap.getOrDefault("P_pos_ratio_3", 1.0),
+                    featureMap.getOrDefault("P_power_ratio_3", 1.0),
+                    featureMap.getOrDefault("T_pos_distance_3", 0.0),
+                    featureMap.getOrDefault("T_power_distance_3", 0.0),
+                    featureMap.getOrDefault("DistanceBin", 0.0)
+            };
+
+// 2) Score the feature vector using the m2cgen-generated RandomForestClassifier
+            double[] prediction = model.score(featureVector);
+            int predictedIndex = argMax(prediction);
 
             // 4) Log or store results
             results.append("\n===== FRAME ").append(frameIndex).append(" =====\n");
@@ -254,6 +282,7 @@ public class TestFragment extends Fragment {
                     .append("\n   framePeaks: ").append(framePeaks)
                     .append("\n   stablePeaks: ").append(stablePeaks)
                     .append("\n   FeatureMap: ").append(featureMap.toString())
+                    .append("\n   Prediction: ").append(Integer.toString(predictedIndex))
                     .append("\n");
 
             frameIndex++;
