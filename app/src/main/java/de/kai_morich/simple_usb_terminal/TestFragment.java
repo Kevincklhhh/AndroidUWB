@@ -106,192 +106,193 @@ public class TestFragment extends Fragment {
 
 
         buttonRunTests.setOnClickListener(v -> {
-            runRealTimeTestWithFiveCIRs();
+            //runRealTimeTestWithFiveCIRs();
+            //runRealTimeTestWithFiveCIRs();
         });
     }
 
-    private void runRealTimeTestWithFiveCIRs() {
-        // 1) Hardcoded test data: five separate CIR frames
-        //    Each entry includes: fpIndex (hex), real[], imag[], distance (dCm)
-        //    You can expand or modify these arrays to suit your tests.
-        List<Map<String, Object>> testCIRFrames = new ArrayList<>();
-
-        // Where testCIRFrames is a List<Map<String, Object>>, for example:
-// private List<Map<String, Object>> testCIRFrames = new ArrayList<>();
+//    private void runRealTimeTestWithFiveCIRs() {
+//        // 1) Hardcoded test data: five separate CIR frames
+//        //    Each entry includes: fpIndex (hex), real[], imag[], distance (dCm)
+//        //    You can expand or modify these arrays to suit your tests.
+//        List<Map<String, Object>> testCIRFrames = new ArrayList<>();
 //
-// The createTestCIR signature might be:
-// private Map<String, Object> createTestCIR(String fpIndex, int[] cirRealValues, int[] cirImagValues, int dCm)
-
-        testCIRFrames.add(createTestCIR(
-                "0000B8E9",
-                new int[]{-9, 6, 2, 28, 46, 49, 6, 22, 18, -42, -24, 10, -4, 7, 3, -20, 8, -16, 12, 19, 29, 53, 108, 56, 3, 6, 20, 21, 11, -15, -131, -255, -205, 10, 28, -439, -1207, -1480, -1004, -300, -126, -579, -844, -525, 70, 546, 628, 500, 307, 383, 340, 123, -43, -187, -211, -218, -153, -39, -6, -69, -170, -187, -184, -115, -67, 2, 24, 16, -5, -23},
-                new int[]{2, 34, 29, 21, -6, -17, -16, 19, -20, -38, -36, -30, -13, 20, 22, -16, -2, 10, -1, 4, -4, 28, -35, -36, 1, 7, -9, -12, -17, 123, 348, 467, 61, -316, 162, 1004, 706, -896, -2071, -1447, -178, 720, 1222, 1114, 581, 243, 164, 305, 124, -255, -471, -349, -169, -157, -158, -131, -76, -122, -155, -105, 12, 108, 106, 27, -31, -45, 14, 29, 31, -12},
-                32
-        ));
-
-        testCIRFrames.add(createTestCIR(
-                "0000B875",
-                new int[]{35, -17, 39, 8, -2, 54, 10, -41, -21, -24, -22, 22, 60, 6, 8, 24, 71, 32, 62, -12, -48, -47, -3, 18, -64, -11, -20, 159, 358, 546, 37, -256, 361, 1149, 460, -1687, -2517, -1555, -142, 860, 1366, 1100, 484, 214, 158, 373, 88, -338, -470, -391, -183, -219, -200, -235, -69, -112, -157, -98, 32, 27, 14, 25, -33, -50, 38, 49, 39, 41, 41, 84},
-                new int[]{38, 11, -2, -7, 28, 15, 2, -37, -43, -19, 32, 3, 42, 53, 13, 19, 23, 0, -27, -51, -74, -53, 2, 17, 5, -7, -1, 69, 226, 290, 124, -135, 59, 726, 1765, 1703, 714, 95, 87, 835, 1160, 689, -81, -492, -610, -450, -184, -414, -393, -189, 35, 136, 190, 232, 92, 15, -14, 24, 187, 207, 235, 149, 32, -34, -29, -23, 18, 28, -39, -93},
-                31
-        ));
-
-        testCIRFrames.add(createTestCIR(
-                "0000BAD5",
-                new int[]{-11, -14, 70, 26, 53, 20, 9, 0, 29, -8, 23, 17, 16, 24, 17, 39, -25, -26, 27, 46, 31, 35, 4, 16, -3, 41, 32, 35, 44, 11, 16, 23, 14, 18, -12, -45, 21, 157, 425, 475, 46, -264, 210, 1002, 671, -897, -1955, -1322, -129, 733, 1220, 1076, 591, 236, 140, 283, 95, -268, -478, -359, -165, -176, -194, -150, -77, -131, -139, -70, 42, 106},
-                new int[]{-9, 7, 27, -29, 8, 43, 51, 46, 12, 2, 26, 0, -53, -15, 50, 11, 14, -10, 13, -4, 28, 23, 37, 21, 16, -16, -10, 20, 26, -40, -21, -17, -10, -7, 20, 5, 0, 53, 139, 236, 202, -24, 9, 442, 1057, 1432, 949, 309, 179, 543, 804, 490, -77, -579, -575, -466, -277, -365, -300, -122, 11, 151, 194, 210, 124, 31, 1, 77, 168, 198},
-                34
-        ));
-
-        testCIRFrames.add(createTestCIR(
-                "0000B98D",
-                new int[]{9, -31, 35, -18, -32, -11, -9, -12, 27, 16, 10, -18, -15, -24, -36, -9, 1, -31, 9, -4, -28, -42, -13, 39, 27, 37, -1, 15, 18, 56, 5, -38, -178, -460, -439, -68, 209, -419, -1115, -765, 535, 1295, 653, -172, -1099, -1323, -905, -148, 136, 128, 6, 126, 485, 521, 282, 76, 49, 11, 0, 28, 78, 97, -43, -107, -175, -123, -35, 11, 25, -12},
-                new int[]{1, -43, -34, -13, -26, -21, -21, 8, 5, 42, 26, 4, -5, -27, -11, 14, 19, 10, 16, -14, -4, -21, -5, 36, 36, -2, 14, -9, -2, 5, -13, -8, 70, 104, 3, -161, -33, 202, -61, -972, -1809, -1603, -620, -139, -134, -70, 165, 432, 564, 614, 473, 257, 109, -17, -97, -147, -257, -305, -239, -145, -85, -90, -93, -95, -63, -67, -120, -54, -29, 50},
-                36
-        ));
-
-        testCIRFrames.add(createTestCIR(
-                "0000B9C6",
-                new int[]{3, -34, -6, 28, -45, -44, -27, -22, -5, -22, 1, -47, 17, 20, 4, -3, -34, -64, -38, 23, -30, -35, -21, -40, -26, 26, 41, 1, 22, 29, 41, 24, -60, -257, -544, -289, 87, 97, -824, -1340, 115, 2061, 2284, 566, -329, -1471, -1524, -888, -282, 5, -157, -154, 155, 556, 559, 277, 179, 147, 213, 115, 47, 95, 164, 22, -78, -106, -62, 13, 41, 43},
-                new int[]{-37, -45, -67, -10, -12, -13, -12, 15, 11, -9, -41, -7, 18, 9, -17, 37, -27, -29, -44, -48, -12, 24, -11, -12, 66, 34, 20, 14, 25, -6, 19, -31, -65, -103, -206, -197, -40, 107, -151, -934, -1880, -1696, -823, -104, -293, -881, -715, -254, 463, 583, 613, 338, 256, 348, 215, 1, -137, -168, -249, -197, -71, -38, -24, -146, -242, -209, -167, -75, 9, 57},
-                31
-        ));
-
-
-        // 2) Prepare logging of results
-        // 2) Prepare logging of results
-        StringBuilder results = new StringBuilder();
-
-// We can reuse the same UnboundedPeakTracker as if processing frames in real-time
-        TerminalFragment.UnboundedPeakTracker realTimeTracker = new TerminalFragment.UnboundedPeakTracker(
-                90,   // tolerance
-                5,     // maxUnmatchedFrames
-                4,     // top-n to check, for example
-                true   // debug
-        );
-
-// 3) Process each of the five CIR frames sequentially
-        int upsampleFactor = 64;
-        int minDistance = 90;
-        double amplitudeThreshold = 220.0;
-        int frameIndex = 0;
-
-        for (Map<String, Object> cirMap : testCIRFrames) {
-            long frameStart = System.nanoTime();
-
-            // =============== Step A: PARSE RAW DATA ===============
-            String fpIndex = (String) cirMap.get("fpIndex");
-            int[] cirRealValues = (int[]) cirMap.get("cirRealValues");
-            int[] cirImagValues = (int[]) cirMap.get("cirImagValues");
-            int dCm = (int) cirMap.get("dCm");
-
-            // Convert fpIndex to decimal
-            double firstPathIndex = hexToFixedPoint(fpIndex);
-
-            double[] cirRealArray = new double[cirRealValues.length];
-            double[] cirImagArray = new double[cirImagValues.length];
-            for (int i = 0; i < cirRealValues.length; i++) {
-                cirRealArray[i] = cirRealValues[i];
-                cirImagArray[i] = cirImagValues[i];
-            }
-
-            // Compute magnitude
-            double[] cirMagnitude = new double[cirRealArray.length];
-            for (int i = 0; i < cirRealArray.length; i++) {
-                cirMagnitude[i] = Math.sqrt(
-                        cirRealArray[i]*cirRealArray[i] + cirImagArray[i]*cirImagArray[i]
-                );
-            }
-
-            // =============== Step B: UPSAMPLE & ALIGN ===============
-            long t1 = System.nanoTime();
-            double[] upsampledCIR = resampleFFT(cirMagnitude, upsampleFactor * cirMagnitude.length);
-            double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
-            long t2 = System.nanoTime();
-            double upsampleAlignTimeMs = (t2 - t1) / 1.0e6;
-
-            // =============== Step C: PEAK DETECTION & TRACKING ===============
-            t1 = System.nanoTime();
-            List<Integer> framePeaks = detectPeaksLocalMax(
-                    alignedCIR,
-                    amplitudeThreshold,
-                    minDistance,
-                    false // debug
-            );
-
-            // The new 'update(...)' returns a list of stable peaks directly
-            TerminalFragment.UnboundedPeakTracker.UpdateResult updateResult = realTimeTracker.update(framePeaks);
-            List<Integer> stablePeaks = updateResult.getFinalIndices();
-            boolean stable = updateResult.isStable();
-
-            t2 = System.nanoTime();
-            double peakDetectionTimeMs = (t2 - t1) / 1.0e6;
-
-            // =============== Step D: FEATURE EXTRACTION ===============
-            t1 = System.nanoTime();
-
-            // Build features from the stable peak indices
-            Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
-                    stablePeaks,
-                    alignedCIR,
-                    (double) dCm  // e.g. store distance as "DistanceBin"
-            );
-
-            t2 = System.nanoTime();
-            double featureExtractionTimeMs = (t2 - t1) / 1.0e6;
-
-            long frameEnd = System.nanoTime();
-            double totalFrameTimeMs = (frameEnd - frameStart) / 1.0e6;
-            if (featureMap == null || featureMap.isEmpty()) {
-                return;
-            }
-
-            // 11) Build the feature vector in the correct order for your model
-            // Step ... we assume we already have `stablePeaks`, `alignedCIR`, etc.
-            double[] featureVector = new double[] {
-                    featureMap.getOrDefault("Num_Peaks", 0.0),
-                    featureMap.getOrDefault("Pmax", 0.0),
-                    featureMap.getOrDefault("Tmax", 0.0),
-                    featureMap.getOrDefault("P_pos_ratio_1", 1.0),
-                    featureMap.getOrDefault("P_power_ratio_1", 1.0),
-                    featureMap.getOrDefault("T_pos_distance_1", 0.0),
-                    featureMap.getOrDefault("T_power_distance_1", 0.0),
-                    featureMap.getOrDefault("P_pos_ratio_2", 1.0),
-                    featureMap.getOrDefault("P_power_ratio_2", 1.0),
-                    featureMap.getOrDefault("T_pos_distance_2", 0.0),
-                    featureMap.getOrDefault("T_power_distance_2", 0.0),
-                    featureMap.getOrDefault("P_pos_ratio_3", 1.0),
-                    featureMap.getOrDefault("P_power_ratio_3", 1.0),
-                    featureMap.getOrDefault("T_pos_distance_3", 0.0),
-                    featureMap.getOrDefault("T_power_distance_3", 0.0),
-                    featureMap.getOrDefault("DistanceBin", 0.0)
-            };
-
-// 2) Score the feature vector using the m2cgen-generated RandomForestClassifier
-            double[] prediction = model.score(featureVector);
-            int predictedIndex = argMax(prediction);
-
-            // 4) Log or store results
-            results.append("\n===== FRAME ").append(frameIndex).append(" =====\n");
-            results.append("FPIndex(hex) = ").append(fpIndex)
-                    .append(", Dist=").append(dCm)
-                    .append("\n   Upsample+Align: ").append(String.format("%.3f ms", upsampleAlignTimeMs))
-                    .append("\n   Detect+Track:   ").append(String.format("%.3f ms", peakDetectionTimeMs))
-                    .append("\n   FeatExtract:    ").append(String.format("%.3f ms", featureExtractionTimeMs))
-                    .append("\n   TOTAL Frame:    ").append(String.format("%.3f ms", totalFrameTimeMs))
-                    .append("\n   framePeaks: ").append(framePeaks)
-                    .append("\n   stablePeaks: ").append(stablePeaks)
-                    .append("\n   FeatureMap: ").append(featureMap.toString())
-                    .append("\n   Prediction: ").append(Integer.toString(predictedIndex))
-                    .append("\n");
-
-            frameIndex++;
-        }
-
-// Finally, present all results in textView or logs
-        textViewTestResults.setText(results.toString());
-
-    }
+//        // Where testCIRFrames is a List<Map<String, Object>>, for example:
+//// private List<Map<String, Object>> testCIRFrames = new ArrayList<>();
+////
+//// The createTestCIR signature might be:
+//// private Map<String, Object> createTestCIR(String fpIndex, int[] cirRealValues, int[] cirImagValues, int dCm)
+//
+//        testCIRFrames.add(createTestCIR(
+//                "0000B8E9",
+//                new int[]{-9, 6, 2, 28, 46, 49, 6, 22, 18, -42, -24, 10, -4, 7, 3, -20, 8, -16, 12, 19, 29, 53, 108, 56, 3, 6, 20, 21, 11, -15, -131, -255, -205, 10, 28, -439, -1207, -1480, -1004, -300, -126, -579, -844, -525, 70, 546, 628, 500, 307, 383, 340, 123, -43, -187, -211, -218, -153, -39, -6, -69, -170, -187, -184, -115, -67, 2, 24, 16, -5, -23},
+//                new int[]{2, 34, 29, 21, -6, -17, -16, 19, -20, -38, -36, -30, -13, 20, 22, -16, -2, 10, -1, 4, -4, 28, -35, -36, 1, 7, -9, -12, -17, 123, 348, 467, 61, -316, 162, 1004, 706, -896, -2071, -1447, -178, 720, 1222, 1114, 581, 243, 164, 305, 124, -255, -471, -349, -169, -157, -158, -131, -76, -122, -155, -105, 12, 108, 106, 27, -31, -45, 14, 29, 31, -12},
+//                32
+//        ));
+//
+//        testCIRFrames.add(createTestCIR(
+//                "0000B875",
+//                new int[]{35, -17, 39, 8, -2, 54, 10, -41, -21, -24, -22, 22, 60, 6, 8, 24, 71, 32, 62, -12, -48, -47, -3, 18, -64, -11, -20, 159, 358, 546, 37, -256, 361, 1149, 460, -1687, -2517, -1555, -142, 860, 1366, 1100, 484, 214, 158, 373, 88, -338, -470, -391, -183, -219, -200, -235, -69, -112, -157, -98, 32, 27, 14, 25, -33, -50, 38, 49, 39, 41, 41, 84},
+//                new int[]{38, 11, -2, -7, 28, 15, 2, -37, -43, -19, 32, 3, 42, 53, 13, 19, 23, 0, -27, -51, -74, -53, 2, 17, 5, -7, -1, 69, 226, 290, 124, -135, 59, 726, 1765, 1703, 714, 95, 87, 835, 1160, 689, -81, -492, -610, -450, -184, -414, -393, -189, 35, 136, 190, 232, 92, 15, -14, 24, 187, 207, 235, 149, 32, -34, -29, -23, 18, 28, -39, -93},
+//                31
+//        ));
+//
+//        testCIRFrames.add(createTestCIR(
+//                "0000BAD5",
+//                new int[]{-11, -14, 70, 26, 53, 20, 9, 0, 29, -8, 23, 17, 16, 24, 17, 39, -25, -26, 27, 46, 31, 35, 4, 16, -3, 41, 32, 35, 44, 11, 16, 23, 14, 18, -12, -45, 21, 157, 425, 475, 46, -264, 210, 1002, 671, -897, -1955, -1322, -129, 733, 1220, 1076, 591, 236, 140, 283, 95, -268, -478, -359, -165, -176, -194, -150, -77, -131, -139, -70, 42, 106},
+//                new int[]{-9, 7, 27, -29, 8, 43, 51, 46, 12, 2, 26, 0, -53, -15, 50, 11, 14, -10, 13, -4, 28, 23, 37, 21, 16, -16, -10, 20, 26, -40, -21, -17, -10, -7, 20, 5, 0, 53, 139, 236, 202, -24, 9, 442, 1057, 1432, 949, 309, 179, 543, 804, 490, -77, -579, -575, -466, -277, -365, -300, -122, 11, 151, 194, 210, 124, 31, 1, 77, 168, 198},
+//                34
+//        ));
+//
+//        testCIRFrames.add(createTestCIR(
+//                "0000B98D",
+//                new int[]{9, -31, 35, -18, -32, -11, -9, -12, 27, 16, 10, -18, -15, -24, -36, -9, 1, -31, 9, -4, -28, -42, -13, 39, 27, 37, -1, 15, 18, 56, 5, -38, -178, -460, -439, -68, 209, -419, -1115, -765, 535, 1295, 653, -172, -1099, -1323, -905, -148, 136, 128, 6, 126, 485, 521, 282, 76, 49, 11, 0, 28, 78, 97, -43, -107, -175, -123, -35, 11, 25, -12},
+//                new int[]{1, -43, -34, -13, -26, -21, -21, 8, 5, 42, 26, 4, -5, -27, -11, 14, 19, 10, 16, -14, -4, -21, -5, 36, 36, -2, 14, -9, -2, 5, -13, -8, 70, 104, 3, -161, -33, 202, -61, -972, -1809, -1603, -620, -139, -134, -70, 165, 432, 564, 614, 473, 257, 109, -17, -97, -147, -257, -305, -239, -145, -85, -90, -93, -95, -63, -67, -120, -54, -29, 50},
+//                36
+//        ));
+//
+//        testCIRFrames.add(createTestCIR(
+//                "0000B9C6",
+//                new int[]{3, -34, -6, 28, -45, -44, -27, -22, -5, -22, 1, -47, 17, 20, 4, -3, -34, -64, -38, 23, -30, -35, -21, -40, -26, 26, 41, 1, 22, 29, 41, 24, -60, -257, -544, -289, 87, 97, -824, -1340, 115, 2061, 2284, 566, -329, -1471, -1524, -888, -282, 5, -157, -154, 155, 556, 559, 277, 179, 147, 213, 115, 47, 95, 164, 22, -78, -106, -62, 13, 41, 43},
+//                new int[]{-37, -45, -67, -10, -12, -13, -12, 15, 11, -9, -41, -7, 18, 9, -17, 37, -27, -29, -44, -48, -12, 24, -11, -12, 66, 34, 20, 14, 25, -6, 19, -31, -65, -103, -206, -197, -40, 107, -151, -934, -1880, -1696, -823, -104, -293, -881, -715, -254, 463, 583, 613, 338, 256, 348, 215, 1, -137, -168, -249, -197, -71, -38, -24, -146, -242, -209, -167, -75, 9, 57},
+//                31
+//        ));
+//
+//
+//        // 2) Prepare logging of results
+//        // 2) Prepare logging of results
+//        StringBuilder results = new StringBuilder();
+//
+//// We can reuse the same UnboundedPeakTracker as if processing frames in real-time
+//        TerminalFragment.UnboundedPeakTracker realTimeTracker = new TerminalFragment.UnboundedPeakTracker(
+//                90,   // tolerance
+//                5,     // maxUnmatchedFrames
+//                4,     // top-n to check, for example
+//                true   // debug
+//        );
+//
+//// 3) Process each of the five CIR frames sequentially
+//        int upsampleFactor = 64;
+//        int minDistance = 90;
+//        double amplitudeThreshold = 220.0;
+//        int frameIndex = 0;
+//
+//        for (Map<String, Object> cirMap : testCIRFrames) {
+//            long frameStart = System.nanoTime();
+//
+//            // =============== Step A: PARSE RAW DATA ===============
+//            String fpIndex = (String) cirMap.get("fpIndex");
+//            int[] cirRealValues = (int[]) cirMap.get("cirRealValues");
+//            int[] cirImagValues = (int[]) cirMap.get("cirImagValues");
+//            int dCm = (int) cirMap.get("dCm");
+//
+//            // Convert fpIndex to decimal
+//            double firstPathIndex = hexToFixedPoint(fpIndex);
+//
+//            double[] cirRealArray = new double[cirRealValues.length];
+//            double[] cirImagArray = new double[cirImagValues.length];
+//            for (int i = 0; i < cirRealValues.length; i++) {
+//                cirRealArray[i] = cirRealValues[i];
+//                cirImagArray[i] = cirImagValues[i];
+//            }
+//
+//            // Compute magnitude
+//            double[] cirMagnitude = new double[cirRealArray.length];
+//            for (int i = 0; i < cirRealArray.length; i++) {
+//                cirMagnitude[i] = Math.sqrt(
+//                        cirRealArray[i]*cirRealArray[i] + cirImagArray[i]*cirImagArray[i]
+//                );
+//            }
+//
+//            // =============== Step B: UPSAMPLE & ALIGN ===============
+//            long t1 = System.nanoTime();
+//            double[] upsampledCIR = resampleFFT(cirMagnitude, upsampleFactor * cirMagnitude.length);
+//            double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
+//            long t2 = System.nanoTime();
+//            double upsampleAlignTimeMs = (t2 - t1) / 1.0e6;
+//
+//            // =============== Step C: PEAK DETECTION & TRACKING ===============
+//            t1 = System.nanoTime();
+//            List<Integer> framePeaks = detectPeaksLocalMax(
+//                    alignedCIR,
+//                    amplitudeThreshold,
+//                    minDistance,
+//                    false // debug
+//            );
+//
+//            // The new 'update(...)' returns a list of stable peaks directly
+//            TerminalFragment.UnboundedPeakTracker.UpdateResult updateResult = realTimeTracker.update(framePeaks);
+//            List<Integer> stablePeaks = updateResult.getFinalIndices();
+//            boolean stable = updateResult.isStable();
+//
+//            t2 = System.nanoTime();
+//            double peakDetectionTimeMs = (t2 - t1) / 1.0e6;
+//
+//            // =============== Step D: FEATURE EXTRACTION ===============
+//            t1 = System.nanoTime();
+//
+//            // Build features from the stable peak indices
+//            Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
+//                    stablePeaks,
+//                    alignedCIR,
+//                    (double) dCm  // e.g. store distance as "DistanceBin"
+//            );
+//
+//            t2 = System.nanoTime();
+//            double featureExtractionTimeMs = (t2 - t1) / 1.0e6;
+//
+//            long frameEnd = System.nanoTime();
+//            double totalFrameTimeMs = (frameEnd - frameStart) / 1.0e6;
+//            if (featureMap == null || featureMap.isEmpty()) {
+//                return;
+//            }
+//
+//            // 11) Build the feature vector in the correct order for your model
+//            // Step ... we assume we already have `stablePeaks`, `alignedCIR`, etc.
+//            double[] featureVector = new double[] {
+//                    featureMap.getOrDefault("Num_Peaks", 0.0),
+//                    featureMap.getOrDefault("Pmax", 0.0),
+//                    featureMap.getOrDefault("Tmax", 0.0),
+//                    featureMap.getOrDefault("P_pos_ratio_1", 1.0),
+//                    featureMap.getOrDefault("P_power_ratio_1", 1.0),
+//                    featureMap.getOrDefault("T_pos_distance_1", 0.0),
+//                    featureMap.getOrDefault("T_power_distance_1", 0.0),
+//                    featureMap.getOrDefault("P_pos_ratio_2", 1.0),
+//                    featureMap.getOrDefault("P_power_ratio_2", 1.0),
+//                    featureMap.getOrDefault("T_pos_distance_2", 0.0),
+//                    featureMap.getOrDefault("T_power_distance_2", 0.0),
+//                    featureMap.getOrDefault("P_pos_ratio_3", 1.0),
+//                    featureMap.getOrDefault("P_power_ratio_3", 1.0),
+//                    featureMap.getOrDefault("T_pos_distance_3", 0.0),
+//                    featureMap.getOrDefault("T_power_distance_3", 0.0),
+//                    featureMap.getOrDefault("DistanceBin", 0.0)
+//            };
+//
+//// 2) Score the feature vector using the m2cgen-generated RandomForestClassifier
+//            double[] prediction = model.score(featureVector);
+//            int predictedIndex = argMax(prediction);
+//
+//            // 4) Log or store results
+//            results.append("\n===== FRAME ").append(frameIndex).append(" =====\n");
+//            results.append("FPIndex(hex) = ").append(fpIndex)
+//                    .append(", Dist=").append(dCm)
+//                    .append("\n   Upsample+Align: ").append(String.format("%.3f ms", upsampleAlignTimeMs))
+//                    .append("\n   Detect+Track:   ").append(String.format("%.3f ms", peakDetectionTimeMs))
+//                    .append("\n   FeatExtract:    ").append(String.format("%.3f ms", featureExtractionTimeMs))
+//                    .append("\n   TOTAL Frame:    ").append(String.format("%.3f ms", totalFrameTimeMs))
+//                    .append("\n   framePeaks: ").append(framePeaks)
+//                    .append("\n   stablePeaks: ").append(stablePeaks)
+//                    .append("\n   FeatureMap: ").append(featureMap.toString())
+//                    .append("\n   Prediction: ").append(Integer.toString(predictedIndex))
+//                    .append("\n");
+//
+//            frameIndex++;
+//        }
+//
+//// Finally, present all results in textView or logs
+//        textViewTestResults.setText(results.toString());
+//
+//    }
 
     /**
      * Helper function to build each test frame's data in the same shape:

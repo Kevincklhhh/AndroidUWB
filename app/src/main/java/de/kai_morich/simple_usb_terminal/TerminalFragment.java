@@ -503,7 +503,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         }
 
         // 3) Check thresholds: if maxGyro, accelerometer std, and net displacement all exceed their thresholds.
-        if (maxGyro > 2.6f ) {
+        if (maxGyro > GYROSCOPE_TRIGGER_THRESHOLD &&
+                stdAccelMag > ACCEL_STD_THRESHOLD &&
+                netDisplacement > NET_DISPLACEMENT_THRESHOLD) {
 
             String message = String.format(
                     "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m",
@@ -556,10 +558,10 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         isUwbActive = true;
 //        updateReceiveText("UWB ranging activated.");
 //        logIMUData("UWB ranging activated.\n");
-        //send("initf 4 9600");
+        send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        uwbHandler.postDelayed(stopUwbRunnable, 1000);
+        uwbHandler.postDelayed(stopUwbRunnable, 5000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -567,7 +569,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         public void run() {
             isUwbActive = false;
             updateReceiveText("UWB ranging stopped; resuming IMU detection.");
-            //send("stop");
+            send("stop");
             // Optionally, re-register sensors if needed.
         }
     };
