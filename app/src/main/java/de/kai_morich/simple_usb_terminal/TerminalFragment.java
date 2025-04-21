@@ -1071,7 +1071,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
 // 4) Logging or display
         logReceivedData("predictedCategory : " + seatCategory + "stable : "+ stable +"\n");
-        updateReceiveText(seatCategory);
+        updateReceiveText("predictedCategory : " + seatCategory + "stable : "+ stable +"\n");
         long receiveTimestamp = System.currentTimeMillis();
         String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">\n";
         logReceivedData(logEntry);
