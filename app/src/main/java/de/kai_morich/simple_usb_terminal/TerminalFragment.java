@@ -67,8 +67,10 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -135,9 +137,14 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private long windowStartTime = 0;
     private static final int WINDOW_SIZE_MS = 1600;
     private static final int STEP_MS = 200;
-    private static final float GYROSCOPE_TRIGGER_THRESHOLD = 2.2f;
+    private static final float GYROSCOPE_TRIGGER_THRESHOLD = 2.0f;
     private static final float ACCEL_STD_THRESHOLD = 1.2f;
-    private static final float NET_DISPLACEMENT_THRESHOLD = 1.0f;
+    private static final float NET_DISPLACEMENT_THRESHOLD = 0.9f;
+    private final Queue<String> recentStablePredictions = new LinkedList<>();
+    private final int REQUIRED_STABLE_COUNT = 3;
+    private long localizationStartTime = -1;
+
+
     private static final float ACCEL_HIGH_THRESHOLD = 1.0f;
     private int dataCollectionCount = 0;
 
@@ -508,10 +515,11 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 netDisplacement > NET_DISPLACEMENT_THRESHOLD) {
 
             String message = String.format(
-                    "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m",
+                    "UWB activated\nGyro Max: %.3f\nAccel Std Dev: %.3f m/s²\nNet Displacement: %.3f m\n",
                     maxGyro, stdAccelMag, netDisplacement
             );
-            updateReceiveText(message);
+            //
+            //updateReceiveText(message);
             //logIMUData(message);
 
             // Iterate through the gyroscope window and log each reading.
@@ -558,10 +566,14 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         isUwbActive = true;
 //        updateReceiveText("UWB ranging activated.");
 //        logIMUData("UWB ranging activated.\n");
+        long startTimestamp = System.currentTimeMillis();
+        String logEntryStart = "LOCALIZATION START TIMESTAMP: " + startTimestamp + "\n";
+        logReceivedData(logEntryStart);
+
         send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        //uwbHandler.postDelayed(stopUwbRunnable, 5000);
+        uwbHandler.postDelayed(stopUwbRunnable, 3000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -573,8 +585,6 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             // Optionally, re-register sensors if needed.
         }
     };
-
-
 
 
 
@@ -976,6 +986,8 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             false   // debug
     );
     private void processCirDataAsync(Map<String, Object> cirData) {
+        long frameStartTimeNs = System.nanoTime(); // Start total timer
+
         // 1) Parse raw data from the Map
         String fpIndex = (String) cirData.get("fpIndex");
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
@@ -992,55 +1004,47 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         // 4) Compute CIR magnitude
         double[] cirMagnitude = new double[cirRealArray.length];
         for (int i = 0; i < cirRealArray.length; i++) {
-            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i]
-                    + cirImagArray[i] * cirImagArray[i]);
+            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
         }
 
-        // 5) Upsample the CIR
-        //    Suppose CIRlength is the original length of cirMagnitude
-        //    If cirMagnitude.length == CIRlength, do upsample by 64x
-        int CIRlength = cirMagnitude.length;  // Or retrieve from somewhere if known
+        // 5+6) Upsample the CIR and Align
+        long upsampleAlignStartNs = System.nanoTime();
+        int CIRlength = cirMagnitude.length;
         double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
-
-        // 6) Align the upsampled CIR using the first path index
         double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
+        double upsampleAlignTimeMs = (System.nanoTime() - upsampleAlignStartNs) / 1e6;
 
-        // 7) Detect peaks (local maxima or derivative-based, per your method)
+        // 7) Detect peaks
+        long peakDetectionStartNs = System.nanoTime();
         double amplitudeThreshold = 220.0;
         int minDistance = 90;
-        // If you have derivative-based approach, call detectPeaksCombined
-        // Otherwise, if local maxima only:
         List<Integer> framePeaks = detectPeaksLocalMax(
                 alignedCIR,
                 amplitudeThreshold,
                 minDistance,
                 /*debug=*/true
         );
-
         UnboundedPeakTracker.UpdateResult updateResult = peakTracker.update(framePeaks);
         List<Integer> stablePeaks = updateResult.getFinalIndices();
         boolean stable = updateResult.isStable();
+        double peakDetectionTimeMs = (System.nanoTime() - peakDetectionStartNs) / 1e6;
 
-
-        // 9) Build features from these stable peaks
-        //    (No need for peakTracker.getTrackedPeaks(),
-        //     since stablePeaks is already final from the tracker.)
+        // 9) Feature extraction
+        long featureExtractionStartNs = System.nanoTime();
         Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
                 stablePeaks,
                 alignedCIR,
-                (double) dCm  // distance (optional)
+                (double) dCm
         );
-//
-        // 10) If featureMap is null or incomplete, skip classification
+        double featureExtractionTimeMs = (System.nanoTime() - featureExtractionStartNs) / 1e6;
+
         if (featureMap == null || featureMap.isEmpty()) {
             logReceivedData("No valid features extracted; skipping classification.\n");
             return;
         }
 
-        // 11) Build the feature vector in the correct order for your model
-        // Step ... we assume we already have `stablePeaks`, `alignedCIR`, etc.
-// 1) Build the feature vector
-        double[] featureVector = new double[] {
+        // 11) Build feature vector
+        double[] featureVector = new double[]{
                 featureMap.getOrDefault("Num_Peaks", 0.0),
                 featureMap.getOrDefault("Pmax", 0.0),
                 featureMap.getOrDefault("Tmax", 0.0),
@@ -1057,25 +1061,32 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 featureMap.getOrDefault("T_pos_distance_3", 0.0),
                 featureMap.getOrDefault("T_power_distance_3", 0.0),
                 featureMap.getOrDefault("DistanceBin", 0.0)
-
         };
 
-// 2) Score the feature vector using the m2cgen-generated RandomForestClassifier
+        // 12) Inference
+        long inferenceStartNs = System.nanoTime();
         double[] prediction = model.score(featureVector);
-//
-// 3) Convert numeric output to class index
         int predictedIndex = argMax(prediction);
+        double inferenceTimeMs = (System.nanoTime() - inferenceStartNs) / 1e6;
 
-// 3) Hardcode numeric -> "driver"/"passenger"
-        String seatCategory = Integer.toString(predictedIndex);  // as defined below
+        double totalFrameTimeMs = (System.nanoTime() - frameStartTimeNs) / 1e6;
+
+        // === Log timing breakdown ===
+        StringBuilder timingLog = new StringBuilder();
+        timingLog.append("\n   Upsample+Align:  ").append(String.format("%.3f ms", upsampleAlignTimeMs))
+                .append("\n   Detect+Track:    ").append(String.format("%.3f ms", peakDetectionTimeMs))
+                .append("\n   FeatExtract:     ").append(String.format("%.3f ms", featureExtractionTimeMs))
+                .append("\n   Inference:       ").append(String.format("%.3f ms", inferenceTimeMs))
+                .append("\n   TOTAL Frame:     ").append(String.format("%.3f ms", totalFrameTimeMs));
+
+        //logReceivedData(timingLog.toString());
+    }
+
+
 
 // 4) Logging or display
-        logReceivedData("predictedCategory : " + seatCategory + "stable : "+ stable +"\n");
-        updateReceiveText("predictedCategory : " + seatCategory + "stable : "+ stable +"\n");
-        long receiveTimestamp = System.currentTimeMillis();
-        String logEntry = "<RECEIVE TIMESTAMP: " + receiveTimestamp + ">\n";
-        logReceivedData(logEntry);
-    }
+
+
 
 
 
