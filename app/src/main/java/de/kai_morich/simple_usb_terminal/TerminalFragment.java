@@ -178,6 +178,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
 
     // Variance thresholds for features (adjust these thresholds based on your data)
     private Map<String, Double> varianceThresholds = new HashMap<>();
+    private final LinkedList<Double> recentRssiValues = new LinkedList<>();
+    private final int RSSI_BUFFER_SIZE = 5;
+
 
 
     public TerminalFragment() {
@@ -890,18 +893,19 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void processCompleteMessage(String message) {
-        //logReceivedData("CIR data raw msg: " + message + "\n");
         // Initialize variables
         String fpIndex = null;
         List<Integer> cirRealValues = new ArrayList<>();
         List<Integer> cirImagValues = new ArrayList<>();
         int dCm = -1;
+        double rssiDbm = Double.NaN;  // <-- NEW
 
         // Patterns
         Pattern fpIndexPattern = Pattern.compile("Ipatov FpIndex:\\s*(\\w+)");
         Pattern cirRealValuesPattern = Pattern.compile("CIR_real_values=\\[(.*?)\\]", Pattern.DOTALL);
         Pattern cirImagValuesPattern = Pattern.compile("CIR_imag_values=\\[(.*?)\\]", Pattern.DOTALL);
         Pattern dCmPattern = Pattern.compile("\"D_cm\":\\s*(\\d+)");
+        Pattern rssiPattern = Pattern.compile("\"RSSI_dBm\"\\s*:\\s*\"(-?\\d+(\\.\\d+)?)\""); // <-- NEW
 
         // Find FPindex
         Matcher fpIndexMatcher = fpIndexPattern.matcher(message);
@@ -929,15 +933,22 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             dCm = Integer.parseInt(dCmMatcher.group(1));
         }
 
+        // Find RSSI_dBm  <-- NEW
+        Matcher rssiMatcher = rssiPattern.matcher(message);
+        if (rssiMatcher.find()) {
+            rssiDbm = Double.parseDouble(rssiMatcher.group(1));
+        }
+
         // Now, process the CIR data
         if (fpIndex != null && !cirRealValues.isEmpty() && !cirImagValues.isEmpty()) {
-            // Process the CIR block
-            processCirData(fpIndex, cirRealValues, cirImagValues, dCm);
+            // Process the CIR block (you may now want to pass rssiDbm too)
+            processCirData(fpIndex, cirRealValues, cirImagValues, dCm , rssiDbm );
         } else {
             // Missing data, handle error
             Log.e("CIRParser", "Incomplete CIR data");
         }
     }
+
     private List<Integer> extractNumbers(String s) {
         List<Integer> numbers = new ArrayList<>();
         Pattern numberPattern = Pattern.compile("-?\\d+");
@@ -948,12 +959,13 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         return numbers;
     }
 
-    private void processCirData(String fpIndex, List<Integer> cirRealValues, List<Integer> cirImagValues, int dCm) {
+    private void processCirData(String fpIndex, List<Integer> cirRealValues, List<Integer> cirImagValues, int dCm, double rssiDbm) {
         Map<String, Object> cirData = new HashMap<>();
         cirData.put("fpIndex", fpIndex);
         cirData.put("cirRealValues", cirRealValues);
         cirData.put("cirImagValues", cirImagValues);
         cirData.put("dCm", dCm);
+        cirData.put("rssiDbm", rssiDbm);
 
         // Enqueue the CIR data for processing
         try {
@@ -993,91 +1005,102 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
         List<Integer> cirImagValues = (List<Integer>) cirData.get("cirImagValues");
         int dCm = (int) cirData.get("dCm");  // optional distance in cm
-
-        // 2) Convert FPindex from hex to fixed-point
-        double firstPathIndex = hexToFixedPoint(fpIndex);
-
-        // 3) Convert CIR values (real & imag) into arrays
-        double[] cirRealArray = cirRealValues.stream().mapToDouble(Integer::doubleValue).toArray();
-        double[] cirImagArray = cirImagValues.stream().mapToDouble(Integer::doubleValue).toArray();
-
-        // 4) Compute CIR magnitude
-        double[] cirMagnitude = new double[cirRealArray.length];
-        for (int i = 0; i < cirRealArray.length; i++) {
-            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
+        Double rssiDbmObj = (Double) cirData.get("rssiDbm");
+        if (rssiDbmObj != null && !Double.isNaN(rssiDbmObj)) {
+            synchronized (recentRssiValues) {
+                recentRssiValues.add(rssiDbmObj);
+                if (recentRssiValues.size() > RSSI_BUFFER_SIZE) {
+                    recentRssiValues.removeFirst();
+                }
+                double avgRssi = recentRssiValues.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN);
+                updateReceiveText(String.format("Avg RSSI (last %d): %.1f dBm", recentRssiValues.size(), avgRssi));
+            }
         }
+//
+//        // 2) Convert FPindex from hex to fixed-point
+//        double firstPathIndex = hexToFixedPoint(fpIndex);
+//
+//        // 3) Convert CIR values (real & imag) into arrays
+//        double[] cirRealArray = cirRealValues.stream().mapToDouble(Integer::doubleValue).toArray();
+//        double[] cirImagArray = cirImagValues.stream().mapToDouble(Integer::doubleValue).toArray();
+//
+//        // 4) Compute CIR magnitude
+//        double[] cirMagnitude = new double[cirRealArray.length];
+//        for (int i = 0; i < cirRealArray.length; i++) {
+//            cirMagnitude[i] = Math.sqrt(cirRealArray[i] * cirRealArray[i] + cirImagArray[i] * cirImagArray[i]);
+//        }
+//
+//        // 5+6) Upsample the CIR and Align
+//        long upsampleAlignStartNs = System.nanoTime();
+//        int CIRlength = cirMagnitude.length;
+//        double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
+//        double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
+//        double upsampleAlignTimeMs = (System.nanoTime() - upsampleAlignStartNs) / 1e6;
+//
+//        // 7) Detect peaks
+//        long peakDetectionStartNs = System.nanoTime();
+//        double amplitudeThreshold = 220.0;
+//        int minDistance = 90;
+//        List<Integer> framePeaks = detectPeaksLocalMax(
+//                alignedCIR,
+//                amplitudeThreshold,
+//                minDistance,
+//                /*debug=*/true
+//        );
+//        UnboundedPeakTracker.UpdateResult updateResult = peakTracker.update(framePeaks);
+//        List<Integer> stablePeaks = updateResult.getFinalIndices();
+//        boolean stable = updateResult.isStable();
+//        double peakDetectionTimeMs = (System.nanoTime() - peakDetectionStartNs) / 1e6;
+//
+//        // 9) Feature extraction
+//        long featureExtractionStartNs = System.nanoTime();
+//        Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
+//                stablePeaks,
+//                alignedCIR,
+//                (double) dCm
+//        );
+//        double featureExtractionTimeMs = (System.nanoTime() - featureExtractionStartNs) / 1e6;
+//
+//        if (featureMap == null || featureMap.isEmpty()) {
+//            logReceivedData("No valid features extracted; skipping classification.\n");
+//            return;
+//        }
+//
+//        // 11) Build feature vector
+//        double[] featureVector = new double[]{
+//                featureMap.getOrDefault("Num_Peaks", 0.0),
+//                featureMap.getOrDefault("Pmax", 0.0),
+//                featureMap.getOrDefault("Tmax", 0.0),
+//                featureMap.getOrDefault("P_pos_ratio_1", 1.0),
+//                featureMap.getOrDefault("P_power_ratio_1", 1.0),
+//                featureMap.getOrDefault("T_pos_distance_1", 0.0),
+//                featureMap.getOrDefault("T_power_distance_1", 0.0),
+//                featureMap.getOrDefault("P_pos_ratio_2", 1.0),
+//                featureMap.getOrDefault("P_power_ratio_2", 1.0),
+//                featureMap.getOrDefault("T_pos_distance_2", 0.0),
+//                featureMap.getOrDefault("T_power_distance_2", 0.0),
+//                featureMap.getOrDefault("P_pos_ratio_3", 1.0),
+//                featureMap.getOrDefault("P_power_ratio_3", 1.0),
+//                featureMap.getOrDefault("T_pos_distance_3", 0.0),
+//                featureMap.getOrDefault("T_power_distance_3", 0.0),
+//                featureMap.getOrDefault("DistanceBin", 0.0)
+//        };
 
-        // 5+6) Upsample the CIR and Align
-        long upsampleAlignStartNs = System.nanoTime();
-        int CIRlength = cirMagnitude.length;
-        double[] upsampledCIR = resampleFFT(cirMagnitude, 64 * CIRlength);
-        double[] alignedCIR = alignCir(upsampledCIR, firstPathIndex);
-        double upsampleAlignTimeMs = (System.nanoTime() - upsampleAlignStartNs) / 1e6;
-
-        // 7) Detect peaks
-        long peakDetectionStartNs = System.nanoTime();
-        double amplitudeThreshold = 220.0;
-        int minDistance = 90;
-        List<Integer> framePeaks = detectPeaksLocalMax(
-                alignedCIR,
-                amplitudeThreshold,
-                minDistance,
-                /*debug=*/true
-        );
-        UnboundedPeakTracker.UpdateResult updateResult = peakTracker.update(framePeaks);
-        List<Integer> stablePeaks = updateResult.getFinalIndices();
-        boolean stable = updateResult.isStable();
-        double peakDetectionTimeMs = (System.nanoTime() - peakDetectionStartNs) / 1e6;
-
-        // 9) Feature extraction
-        long featureExtractionStartNs = System.nanoTime();
-        Map<String, Double> featureMap = buildFeaturesFromStablePeaks(
-                stablePeaks,
-                alignedCIR,
-                (double) dCm
-        );
-        double featureExtractionTimeMs = (System.nanoTime() - featureExtractionStartNs) / 1e6;
-
-        if (featureMap == null || featureMap.isEmpty()) {
-            logReceivedData("No valid features extracted; skipping classification.\n");
-            return;
-        }
-
-        // 11) Build feature vector
-        double[] featureVector = new double[]{
-                featureMap.getOrDefault("Num_Peaks", 0.0),
-                featureMap.getOrDefault("Pmax", 0.0),
-                featureMap.getOrDefault("Tmax", 0.0),
-                featureMap.getOrDefault("P_pos_ratio_1", 1.0),
-                featureMap.getOrDefault("P_power_ratio_1", 1.0),
-                featureMap.getOrDefault("T_pos_distance_1", 0.0),
-                featureMap.getOrDefault("T_power_distance_1", 0.0),
-                featureMap.getOrDefault("P_pos_ratio_2", 1.0),
-                featureMap.getOrDefault("P_power_ratio_2", 1.0),
-                featureMap.getOrDefault("T_pos_distance_2", 0.0),
-                featureMap.getOrDefault("T_power_distance_2", 0.0),
-                featureMap.getOrDefault("P_pos_ratio_3", 1.0),
-                featureMap.getOrDefault("P_power_ratio_3", 1.0),
-                featureMap.getOrDefault("T_pos_distance_3", 0.0),
-                featureMap.getOrDefault("T_power_distance_3", 0.0),
-                featureMap.getOrDefault("DistanceBin", 0.0)
-        };
-
-        // 12) Inference
-        long inferenceStartNs = System.nanoTime();
-        double[] prediction = model.score(featureVector);
-        int predictedIndex = argMax(prediction);
-        double inferenceTimeMs = (System.nanoTime() - inferenceStartNs) / 1e6;
-
-        double totalFrameTimeMs = (System.nanoTime() - frameStartTimeNs) / 1e6;
-
-        // === Log timing breakdown ===
-        StringBuilder timingLog = new StringBuilder();
-        timingLog.append("\n   Upsample+Align:  ").append(String.format("%.3f ms", upsampleAlignTimeMs))
-                .append("\n   Detect+Track:    ").append(String.format("%.3f ms", peakDetectionTimeMs))
-                .append("\n   FeatExtract:     ").append(String.format("%.3f ms", featureExtractionTimeMs))
-                .append("\n   Inference:       ").append(String.format("%.3f ms", inferenceTimeMs))
-                .append("\n   TOTAL Frame:     ").append(String.format("%.3f ms", totalFrameTimeMs));
+//        // 12) Inference
+//        long inferenceStartNs = System.nanoTime();
+//        double[] prediction = model.score(featureVector);
+//        int predictedIndex = argMax(prediction);
+//        double inferenceTimeMs = (System.nanoTime() - inferenceStartNs) / 1e6;
+//
+//        double totalFrameTimeMs = (System.nanoTime() - frameStartTimeNs) / 1e6;
+//
+//        // === Log timing breakdown ===
+//        StringBuilder timingLog = new StringBuilder();
+//        timingLog.append("\n   Upsample+Align:  ").append(String.format("%.3f ms", upsampleAlignTimeMs))
+//                .append("\n   Detect+Track:    ").append(String.format("%.3f ms", peakDetectionTimeMs))
+//                .append("\n   FeatExtract:     ").append(String.format("%.3f ms", featureExtractionTimeMs))
+//                .append("\n   Inference:       ").append(String.format("%.3f ms", inferenceTimeMs))
+//                .append("\n   TOTAL Frame:     ").append(String.format("%.3f ms", totalFrameTimeMs));
 
         //logReceivedData(timingLog.toString());
     }
