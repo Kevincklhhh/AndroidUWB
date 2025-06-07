@@ -548,7 +548,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             // (If magnetometer data is available, similar logging can be added here.)
 
             // Activate UWB ranging.
-            activateUwbRanging();
+            //activateUwbRanging();
 
             // Clear buffers to pause further IMU data accumulation during UWB ranging.
             gyroWindow.clear();
