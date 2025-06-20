@@ -548,7 +548,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             // (If magnetometer data is available, similar logging can be added here.)
 
             // Activate UWB ranging.
-            //activateUwbRanging();
+            activateUwbRanging();
 
             // Clear buffers to pause further IMU data accumulation during UWB ranging.
             gyroWindow.clear();
@@ -576,7 +576,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        uwbHandler.postDelayed(stopUwbRunnable, 5000);
+        uwbHandler.postDelayed(stopUwbRunnable, 4000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -844,7 +844,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                     pendingNewline = msg.charAt(msg.length() - 1) == '\r';
                 }
                 spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
-                //logReceivedData(msg);
+                logReceivedData(msg);
                 String receivedString = new String(data, StandardCharsets.UTF_8);
                 synchronized (dataBuffer) {
                     dataBuffer.append(receivedString);
@@ -880,7 +880,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 String completeMessage = data.substring(index, endIndex + 1); // include '!'
 
                 // Process the complete message
-                processCompleteMessage(completeMessage);
+                //processCompleteMessage(completeMessage);
 
                 // Move index past the end of this message
                 index = endIndex + 1;
