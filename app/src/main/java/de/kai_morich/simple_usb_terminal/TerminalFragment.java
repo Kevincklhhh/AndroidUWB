@@ -63,6 +63,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -180,6 +181,9 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private Map<String, Double> varianceThresholds = new HashMap<>();
     private final LinkedList<Double> recentRssiValues = new LinkedList<>();
     private final int RSSI_BUFFER_SIZE = 5;
+    private final Deque<Integer> recentDCmValues = new ArrayDeque<>();
+    private static final int DCM_BUFFER_SIZE = 5;  // or same as RSSI_BUFFER_SIZE
+
 
 
 
@@ -1005,6 +1009,17 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         List<Integer> cirRealValues = (List<Integer>) cirData.get("cirRealValues");
         List<Integer> cirImagValues = (List<Integer>) cirData.get("cirImagValues");
         int dCm = (int) cirData.get("dCm");  // optional distance in cm
+        if (!Double.isNaN(dCm)) {
+            synchronized (recentDCmValues) {
+                recentDCmValues.add(dCm);
+                if (recentDCmValues.size() > DCM_BUFFER_SIZE) {
+                    recentDCmValues.removeFirst();
+                }
+                double avgDCm = recentDCmValues.stream().mapToInt(Integer::intValue).average().orElse(Double.NaN);
+                updateReceiveText(String.format("Avg dCm (last %d): %.1f cm", recentDCmValues.size(), avgDCm));
+            }
+        }
+
         Double rssiDbmObj = (Double) cirData.get("rssiDbm");
         if (rssiDbmObj != null && !Double.isNaN(rssiDbmObj)) {
             synchronized (recentRssiValues) {
