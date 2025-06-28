@@ -577,10 +577,10 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         String logEntryStart = "LOCALIZATION START TIMESTAMP: " + startTimestamp + "\n";
         logReceivedData(logEntryStart);
 
-        //send("initf 4 9600");
+        send("initf 4 9600");
         // Here, insert your code to actually start UWB ranging.
         // For now, we simulate by scheduling a stop after 5 seconds.
-        //uwbHandler.postDelayed(stopUwbRunnable, 5000);
+        uwbHandler.postDelayed(stopUwbRunnable, 5000);
     }
 
     private Runnable stopUwbRunnable = new Runnable() {
@@ -884,7 +884,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 String completeMessage = data.substring(index, endIndex + 1); // include '!'
 
                 // Process the complete message
-                processCompleteMessage(completeMessage);
+                ////processCompleteMessage(completeMessage);
 
                 // Move index past the end of this message
                 index = endIndex + 1;
